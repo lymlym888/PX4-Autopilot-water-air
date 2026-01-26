@@ -60,6 +60,8 @@ void LoggedTopics::add_default_topics()
 	add_topic("hydro_depth_control_message");
 	add_topic("hydro_tilt_message");
 
+	add_topic("hydro_cadrc_control_message", 0);
+
 	// USER TOPIC END
 	add_topic("action_request");
 	add_topic("actuator_armed");

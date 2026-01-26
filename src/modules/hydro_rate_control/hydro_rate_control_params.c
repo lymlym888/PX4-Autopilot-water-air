@@ -40,6 +40,103 @@
  * @author Thomas Gubler <thomas@px4.io>
  */
 
+
+/**
+ * Enable CADRC in STAB mode
+ *
+ * @boolean
+ * @group HY CADRC
+ */
+PARAM_DEFINE_INT32(HY_CADRC_EN, 1);
+
+/**
+ * CADRC J0 (inertia-like parameter)
+ *
+ * @min 0.001
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_CADRC_J0, 10.1746f);
+
+/**
+ * CADRC kp1 (position loop gain)
+ *
+ * @min 0.0
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_CADRC_KP1, 500.0f);
+
+/**
+ * CADRC kp2 (rate loop gain)
+ *
+ * @min 0.0
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_CADRC_KP2, 1000.0f);
+
+/**
+ * CADRC omega_o1 (ESO bandwidth for position loop)
+ *
+ * @min 0.0
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_CADRC_O1, 15.0f);
+
+/**
+ * CADRC omega_o2 (ESO bandwidth for rate loop)
+ *
+ * @min 0.0
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_CADRC_O2, 15.0f);
+
+/**
+ * CADRC alpha (adaptive gain). 0 disables adaptation
+ *
+ * @min 0.0
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_CADRC_ALP, 0.0f);
+
+/**
+ * CADRC tau override (s). 0 = use dt from gyro/scheduler
+ *
+ * @min 0.0
+ * @max 0.02
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_CADRC_TAU, 0.0025f);
+
+/**
+ * Scale CADRC Uc to normalized torque [-1, 1]
+ *
+ * @min 0.000001
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_CADRC_U_SCALE, 0.001f);
+
+/**
+ * STAB max roll angle from RC (deg)
+ *
+ * @min 0.0
+ * @max 80.0
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_ROLL_MAX, 30.0f);
+
+/**
+ * STAB max pitch angle from RC (deg)
+ *
+ * @min 0.0
+ * @max 80.0
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_PITCH_MAX, 20.0f);
+
+
+
+
+
+
 /**
  * Body attack feedforward.
  *

@@ -76,6 +76,9 @@
 #include <uORB/topics/depth_estimated.h>
 #include <uORB/topics/hydro_depth_control_message.h>
 
+#include <uORB/topics/hydro_cadrc_control_message.h>
+#include "CADRC.h"
+
 using matrix::Eulerf;
 using matrix::Quatf;
 
@@ -124,6 +127,8 @@ private:
 	uORB::Publication<vehicle_thrust_setpoint_s>	_hydro_thrust_setpoint_pub{ORB_ID(hydro_thrust_setpoint)};
 	uORB::Publication<hydro_depth_control_message_s>	_hydro_depth_control_message_pub{ORB_ID(hydro_depth_control_message)};
 
+	uORB::Publication<hydro_cadrc_control_message_s>	_hydro_cadrc_control_message_pub{ORB_ID(hydro_cadrc_control_message)};
+
 	manual_control_setpoint_s		_manual_control_setpoint{0};
 	vehicle_rates_setpoint_s		_rates_sp{};
 	vehicle_status_s			_vehicle_status{};
@@ -134,6 +139,8 @@ private:
 	depth_estimated_s			_depth_estimated{};
 	debug_vect_s				_debug_vect{};
 	hydro_depth_control_message_s		_hydro_depth_control_message{};
+
+	hydro_cadrc_control_message_s		_hydro_cadrc_control_message{};
 
 	//水翼部分的setpoint
 	vehicle_thrust_setpoint_s		_hydro_thrust_setpoint{};
@@ -150,6 +157,12 @@ private:
 	float _airspeed_scaling{1.0f};
 
 	float _battery_scale{1.0f};
+
+	//CADRC算法部分
+	ADRCController _cadrc_roll{};
+	ADRCController _cadrc_pitch{};
+	uint8_t _prev_nav_state{vehicle_status_s::NAVIGATION_STATE_MAX};
+
 
 	DEFINE_PARAMETERS(
 		(ParamFloat<px4::params::HY_AIRSPD_MAX>) _param_hy_airspd_max,		//最大空速
@@ -228,8 +241,25 @@ private:
 		//手动
 		(ParamFloat<px4::params::HY_MAN_RATIO>) _param_hy_man_ratio,
 
+
+		//CADRC
+		(ParamInt<px4::params::HY_CADRC_EN>) _param_hy_cadrc_en,
+		(ParamFloat<px4::params::HY_CADRC_J0>) _param_hy_cadrc_j0,
+		(ParamFloat<px4::params::HY_CADRC_KP1>) _param_hy_cadrc_kp1,
+		(ParamFloat<px4::params::HY_CADRC_KP2>) _param_hy_cadrc_kp2,
+		(ParamFloat<px4::params::HY_CADRC_O1>) _param_hy_cadrc_o1,
+		(ParamFloat<px4::params::HY_CADRC_O2>) _param_hy_cadrc_o2,
+		(ParamFloat<px4::params::HY_CADRC_ALP>) _param_hy_cadrc_alp,
+		(ParamFloat<px4::params::HY_CADRC_TAU>) _param_hy_cadrc_tau,
+		(ParamFloat<px4::params::HY_CADRC_U_SCALE>) _param_hy_cadrc_u_scale,
+		(ParamFloat<px4::params::HY_ROLL_MAX>) _param_hy_roll_max,
+		(ParamFloat<px4::params::HY_PITCH_MAX>) _param_hy_pitch_max,
+
+
+
 		//引用外部参数
 		(ParamFloat<px4::params::HY_RT_MAX_THRUST>) _param_hy_rt_max_thrust	//单个水下推进器最大推力
+
 	)
 
 	RateControl _rate_control; ///< class for rate control calculations

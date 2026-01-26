@@ -83,8 +83,29 @@ HydroRateControl::parameters_update()
 		// set FF gains to 0 as we add the FF control outside of the rate controller
 		Vector3f(0.f, 0.f, 0.f));
 
+	//CADRC部分
+	const float J0    = _param_hy_cadrc_j0.get();
+	const float kp1   = _param_hy_cadrc_kp1.get();
+	const float kp2   = _param_hy_cadrc_kp2.get();
+	const float o1    = _param_hy_cadrc_o1.get();
+	const float o2    = _param_hy_cadrc_o2.get();
+	const float alpha = _param_hy_cadrc_alp.get();
+
+	_cadrc_roll.setJ0(J0);
+	_cadrc_pitch.setJ0(J0);
+
+	_cadrc_roll.setGains(kp1, o1, kp2, o2);
+	_cadrc_pitch.setGains(kp1, o1, kp2, o2);
+
+	_cadrc_roll.setAlpha(alpha);
+	_cadrc_pitch.setAlpha(alpha);
+
+
 	return PX4_OK;
 }
+
+
+
 
 float HydroRateControl::get_airspeed_and_update_scaling()
 {
@@ -149,8 +170,35 @@ void HydroRateControl::Run()
 
 		_vehicle_status_sub.update(&_vehicle_status);
 
-		//读手动操控信息
-		_manual_control_setpoint_sub.copy(&_manual_control_setpoint);
+// --------------------是否切换模式进入stab，是则reset--------------------------------------------------------------
+		// detect transition into STAB (edge)
+		const bool entered_stab =
+		(_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB) &&
+		(_prev_nav_state != vehicle_status_s::NAVIGATION_STATE_STAB);
+
+		if (entered_stab) {
+		// reset CADRC (and optionally other integrators)
+		_cadrc_roll.reset();
+		_cadrc_pitch.reset();
+		}
+		// update previous nav state
+		_prev_nav_state = _vehicle_status.nav_state;
+
+//---------------------------------小改动，为了无遥控测试用---------------------------------------
+		// //读手动操控信息
+		// _manual_control_setpoint_sub.copy(&_manual_control_setpoint);
+		// 读手动操控信息：如果没检测到(未发布/无效)，就用0
+		manual_control_setpoint_s manual_sp{};
+		const bool got_manual = _manual_control_setpoint_sub.update(&manual_sp);
+
+		if (got_manual && manual_sp.valid && manual_sp.timestamp != 0) {
+			_manual_control_setpoint = manual_sp;
+		} else {
+			// 没RC/无效 -> 全部置0，避免用到脏数据
+			_manual_control_setpoint = {};
+			_manual_control_setpoint.valid = false;
+		}
+//----------------------------------结束--------------------------------------------------------
 
 		//特技模式下，操控量映射到rate_sp
 		if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO)
@@ -180,78 +228,160 @@ void HydroRateControl::Run()
 		//在非手动模式下，执行控制算法
 		if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO) {
 
-			const float airspeed = get_airspeed_and_update_scaling();
+			//CADRC算法增加部分-------------开始
+			// 读取姿态角（实时角度 P）
+			_vehicle_attitude_sub.update(&_vehicle_attitude);
+			Eulerf euler_angles(Quatf(_vehicle_attitude.q));
 
-			/* reset integrals where needed */
-			if (_rates_sp.reset_integral) {
-				_rate_control.resetIntegral();
+			const float roll  = euler_angles.phi();    // rad
+			const float pitch = euler_angles.theta();  // rad
+
+			// 实时角速度 Wx
+			const float p = rates(0); // roll rate rad/s
+			const float q = rates(1); // pitch rate rad/s
+
+			// STAB 模式：由遥控器映射目标角度 P_sp；没RC则用0
+			float roll_sp = 0.f;
+			float pitch_sp = 0.f;
+			if (_manual_control_setpoint.valid && _manual_control_setpoint.timestamp != 0) {
+				roll_sp  = _manual_control_setpoint.roll  * radians(_param_hy_roll_max.get());
+				pitch_sp = -_manual_control_setpoint.pitch * radians(_param_hy_pitch_max.get());
 			}
 
-			/* bi-linear interpolation over airspeed for actuator trim scheduling */
-			Vector3f trim(_param_trim_roll.get(), _param_trim_pitch.get(), _param_trim_yaw.get());
+			// tau：支持地面站覆盖（0=用真实dt）
+			const float tau_override = _param_hy_cadrc_tau.get();
+			const float dt_used = (tau_override > 0.f) ? tau_override : dt;
 
-			if (airspeed < _param_hy_airspd_trim.get()) {
-				trim(0) += interpolate(airspeed, _param_hy_airspd_min.get(), _param_hy_airspd_trim.get(),
-						       _param_hy_dtrim_r_vmin.get(),
-						       0.0f);
-				trim(1) += interpolate(airspeed, _param_hy_airspd_min.get(), _param_hy_airspd_trim.get(),
-						       _param_hy_dtrim_p_vmin.get(),
-						       0.0f);
-				trim(2) += interpolate(airspeed, _param_hy_airspd_min.get(), _param_hy_airspd_trim.get(),
-						       _param_hy_dtrim_y_vmin.get(),
-						       0.0f);
+			if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB
+			&& _param_hy_cadrc_en.get()) {
+
+				// CADRC：P_sp, P, Wx -> Wx_p -> Uc
+				_cadrc_roll.update(roll, roll_sp, p, dt_used);
+				_cadrc_pitch.update(pitch, pitch_sp, q, dt_used);
+
+				// 记录
+				_hydro_cadrc_control_message.roll_sp = roll_sp;
+				_hydro_cadrc_control_message.pitch_sp = pitch_sp;
+				_hydro_cadrc_control_message.roll_z11 = _cadrc_roll._Z1(0,0);
+				_hydro_cadrc_control_message.roll_z12 = _cadrc_roll._Z1(1,0);
+				_hydro_cadrc_control_message.pitch_z11 = _cadrc_pitch._Z1(0,0);
+				_hydro_cadrc_control_message.pitch_z12 = _cadrc_pitch._Z1(1,0);
+
+				// 把 Wx_p 发出来做日志（方便在QGC plot看“期望角速度”）
+				// _rates_sp.roll = _cadrc_roll.getRateSp();
+				// _rates_sp.pitch = _cadrc_pitch.getRateSp();
+				// _rates_sp.yaw = 0.f;
+				// _rates_sp.timestamp = hrt_absolute_time();
+				// _rate_sp_pub.publish(_rates_sp);
+
+				// Uc -> 归一化 torque（交给 control allocation）
+				const float u_scale = _param_hy_cadrc_u_scale.get();
+				float u_roll  = math::constrain(_cadrc_roll.getUc()  * u_scale, -1.f, 1.f);
+				float u_pitch = math::constrain(_cadrc_pitch.getUc() * u_scale, -1.f, 1.f);
+
+				// 记录
+				_hydro_cadrc_control_message.u_roll = _cadrc_roll.getUc()  * u_scale;
+				_hydro_cadrc_control_message.u_pitch = _cadrc_pitch.getUc() * u_scale;
+
+				// yaw：先保持最简单的手动映射（后面再决定是否也用CADRC）
+				float u_yaw = math::constrain(_manual_control_setpoint.yaw * _param_hy_man_y_sc.get()
+								+ _param_trim_yaw.get(), -1.f, 1.f);
+
+				// 加 trim（保持与原框架一致）
+				u_roll  = math::constrain(u_roll  + _param_trim_roll.get(),  -1.f, 1.f);
+				u_pitch = math::constrain(u_pitch + _param_trim_pitch.get(), -1.f, 1.f);
+				_hydro_cadrc_control_message.roll_z21 = _cadrc_roll._Z2(0,0);
+				_hydro_cadrc_control_message.roll_z22 = _cadrc_roll._Z2(1,0);
+				_hydro_cadrc_control_message.pitch_z21 = _cadrc_pitch._Z2(0,0);
+				_hydro_cadrc_control_message.pitch_z22 = _cadrc_pitch._Z2(1,0);
+
+				_hydro_torque_setpoint.xyz[0] = u_roll;
+				_hydro_torque_setpoint.xyz[1] = u_pitch;
+				_hydro_torque_setpoint.xyz[2] = u_yaw;
+
+				// 推力：STAB 下也由遥控器给一个基准
+				_thrust_sp_norm = math::constrain((_manual_control_setpoint.throttle + 1.f) * 0.5f, 0.f, 1.f);
+
+				// 发布!!!!!!
+				_hydro_cadrc_control_message_pub.publish(_hydro_cadrc_control_message);
 
 			} else {
-				trim(0) += interpolate(airspeed, _param_hy_airspd_trim.get(), _param_hy_airspd_max.get(), 0.0f,
-						       _param_hy_dtrim_r_vmax.get());
-				trim(1) += interpolate(airspeed, _param_hy_airspd_trim.get(), _param_hy_airspd_max.get(), 0.0f,
-						       _param_hy_dtrim_p_vmax.get());
-				trim(2) += interpolate(airspeed, _param_hy_airspd_trim.get(), _param_hy_airspd_max.get(), 0.0f,
-						       _param_hy_dtrim_y_vmax.get());
-			}
 
-			_rates_sp_sub.update(&_rates_sp);
+			//CADRC算法增加部分----------结束
 
-			Vector3f body_rates_setpoint = Vector3f(_rates_sp.roll, _rates_sp.pitch, _rates_sp.yaw);
+				const float airspeed = get_airspeed_and_update_scaling();
 
-			// Run attitude RATE controllers which need the desired attitudes from above, add trim.
-			const Vector3f angular_acceleration_setpoint = _rate_control.update(rates, body_rates_setpoint, angular_accel, dt,
-					false);
-
-			const Vector3f gain_ff(_param_hy_rr_ff.get(), _param_hy_pr_ff.get(), _param_hy_yr_ff.get());
-			const Vector3f feedforward = gain_ff.emult(body_rates_setpoint) * _airspeed_scaling;
-
-			Vector3f control_u = angular_acceleration_setpoint * _airspeed_scaling * _airspeed_scaling + feedforward;
-
-			// Special case yaw in Acro: if the parameter HY_ACRO_YAW_CTL is not set then don't control yaw
-			if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO && !_param_hy_acro_yaw_en.get()) {
-				control_u(2) = _manual_control_setpoint.yaw * _param_hy_man_y_sc.get();
-				_rate_control.resetIntegral(2);
-			}
-
-			if (control_u.isAllFinite()) {
-				matrix::constrain(control_u + trim, -1.f, 1.f).copyTo(_hydro_torque_setpoint.xyz);
-
-			} else {
-				_rate_control.resetIntegral();
-				trim.copyTo(_hydro_torque_setpoint.xyz);
-			}
-
-			/* throttle passed through if it is finite */
-			_thrust_sp_norm = PX4_ISFINITE(_rates_sp.thrust_body[0]) ? _rates_sp.thrust_body[0] : 0.0f;
-
-			/* scale effort by battery status */
-			if (_param_hy_bat_scale_en.get() && _thrust_sp_norm > 0.1f) {
-
-				if (_battery_status_sub.updated()) {
-					battery_status_s battery_status{};
-
-					if (_battery_status_sub.copy(&battery_status) && battery_status.connected && battery_status.scale > 0.f) {
-						_battery_scale = battery_status.scale;
-					}
+				/* reset integrals where needed */
+				if (_rates_sp.reset_integral) {
+					_rate_control.resetIntegral();
 				}
 
-				_thrust_sp_norm *= _battery_scale;
+				/* bi-linear interpolation over airspeed for actuator trim scheduling */
+				Vector3f trim(_param_trim_roll.get(), _param_trim_pitch.get(), _param_trim_yaw.get());
+
+				if (airspeed < _param_hy_airspd_trim.get()) {
+					trim(0) += interpolate(airspeed, _param_hy_airspd_min.get(), _param_hy_airspd_trim.get(),
+							_param_hy_dtrim_r_vmin.get(),
+							0.0f);
+					trim(1) += interpolate(airspeed, _param_hy_airspd_min.get(), _param_hy_airspd_trim.get(),
+							_param_hy_dtrim_p_vmin.get(),
+							0.0f);
+					trim(2) += interpolate(airspeed, _param_hy_airspd_min.get(), _param_hy_airspd_trim.get(),
+							_param_hy_dtrim_y_vmin.get(),
+							0.0f);
+
+				} else {
+					trim(0) += interpolate(airspeed, _param_hy_airspd_trim.get(), _param_hy_airspd_max.get(), 0.0f,
+							_param_hy_dtrim_r_vmax.get());
+					trim(1) += interpolate(airspeed, _param_hy_airspd_trim.get(), _param_hy_airspd_max.get(), 0.0f,
+							_param_hy_dtrim_p_vmax.get());
+					trim(2) += interpolate(airspeed, _param_hy_airspd_trim.get(), _param_hy_airspd_max.get(), 0.0f,
+							_param_hy_dtrim_y_vmax.get());
+				}
+
+				_rates_sp_sub.update(&_rates_sp);
+
+				Vector3f body_rates_setpoint = Vector3f(_rates_sp.roll, _rates_sp.pitch, _rates_sp.yaw);
+
+				// Run attitude RATE controllers which need the desired attitudes from above, add trim.
+				const Vector3f angular_acceleration_setpoint = _rate_control.update(rates, body_rates_setpoint, angular_accel, dt,
+						false);
+
+				const Vector3f gain_ff(_param_hy_rr_ff.get(), _param_hy_pr_ff.get(), _param_hy_yr_ff.get());
+				const Vector3f feedforward = gain_ff.emult(body_rates_setpoint) * _airspeed_scaling;
+
+				Vector3f control_u = angular_acceleration_setpoint * _airspeed_scaling * _airspeed_scaling + feedforward;
+
+				// Special case yaw in Acro: if the parameter HY_ACRO_YAW_CTL is not set then don't control yaw
+				if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO && !_param_hy_acro_yaw_en.get()) {
+					control_u(2) = _manual_control_setpoint.yaw * _param_hy_man_y_sc.get();
+					_rate_control.resetIntegral(2);
+				}
+
+				if (control_u.isAllFinite()) {
+					matrix::constrain(control_u + trim, -1.f, 1.f).copyTo(_hydro_torque_setpoint.xyz);
+
+				} else {
+					_rate_control.resetIntegral();
+					trim.copyTo(_hydro_torque_setpoint.xyz);
+				}
+
+				/* throttle passed through if it is finite */
+				_thrust_sp_norm = PX4_ISFINITE(_rates_sp.thrust_body[0]) ? _rates_sp.thrust_body[0] : 0.0f;
+
+				/* scale effort by battery status */
+				if (_param_hy_bat_scale_en.get() && _thrust_sp_norm > 0.1f) {
+
+					if (_battery_status_sub.updated()) {
+						battery_status_s battery_status{};
+
+						if (_battery_status_sub.copy(&battery_status) && battery_status.connected && battery_status.scale > 0.f) {
+							_battery_scale = battery_status.scale;
+						}
+					}
+
+					_thrust_sp_norm *= _battery_scale;
+				}
 			}
 
 		} else {

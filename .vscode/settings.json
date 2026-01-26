@@ -24,8 +24,9 @@
         "cSpell.showStatus": false,
         "cSpell.words": [
                 "acro",
-                "nuttx",
-                "esc"
+                "cadrc",
+                "esc",
+                "nuttx"
         ],
         "debug.toolBarLocation": "docked",
         "editor.defaultFormatter": "chiehyu.vscode-astyle",
@@ -136,5 +137,6 @@
         "python.analysis.extraPaths": [
                 "/opt/ros/humble/lib/python3.10/site-packages",
                 "/opt/ros/humble/local/lib/python3.10/dist-packages"
-        ]
+        ],
+        "C_Cpp.errorSquiggles": "disabled"
 }

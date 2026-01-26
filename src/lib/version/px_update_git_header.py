@@ -121,6 +121,9 @@ header += f"""
 
 # Mavlink
 if (os.path.exists('src/modules/mavlink/mavlink/.git')):
+    # ==== 修复：确保在项目根目录执行 git 命令 ====
+    import os
+    os.chdir("/workspaces/PX4-Autopilot")
     mavlink_git_version = subprocess.check_output('git rev-parse --verify HEAD'.split(),
                                       cwd='src/modules/mavlink/mavlink', stderr=subprocess.STDOUT).decode('utf-8').strip()
     mavlink_git_version_short = mavlink_git_version[0:16]
