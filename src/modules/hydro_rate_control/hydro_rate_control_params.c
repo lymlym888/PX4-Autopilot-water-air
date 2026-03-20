@@ -41,8 +41,101 @@
  */
 
 
+/* ==================== 新增 ADRC 控制器参数 ==================== */
+
 /**
- * Enable CADRC in STAB mode
+ * ADRC controller type selection
+ *
+ * @group HY CADRC
+ * @value 1 LADRC (Linear ADRC)
+ * @value 2 ILADRC (Improved ADRC with Geu compensation)
+ * @value 3 IALADRC (Improved ADRC with Adaptive bandwidth)
+ */
+PARAM_DEFINE_INT32(HY_CADRC_TYPE, 1);
+
+/**
+ * ADRC system gain b0
+ *
+ * @min 0.001
+ * @max 100.0
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_CADRC_B0, 10.1746f);
+
+/**
+ * ADRC controller bandwidth wc (rad/s)
+ *
+ * @min 0.1
+ * @max 200.0
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_CADRC_WC, 40.0f);
+
+/**
+ * ADRC observer bandwidth wo (rad/s) for LADRC/ILADRC
+ *
+ * @min 0.1
+ * @max 300.0
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_CADRC_WO, 120.0f);
+
+/**
+ * ADRC minimum observer bandwidth wo_min (rad/s) for IALADRC
+ *
+ * @min 0.1
+ * @max 300.0
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_CADRC_WO_MIN, 120.0f);
+
+/**
+ * ADRC maximum observer bandwidth wo_max (rad/s) for IALADRC
+ *
+ * @min 0.1
+ * @max 500.0
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_CADRC_WO_MAX, 200.0f);
+
+/**
+ * ADRC Geu filter cutoff frequency (rad/s) for ILADRC/IALADRC
+ *
+ * @min 0.1
+ * @max 500.0
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_CADRC_WCUT, 314.159f); // 100*pi
+
+/**
+ * ADRC adaptive coefficient for IALADRC
+ *
+ * @min 0.0
+ * @max 1.0
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_CADRC_ETA, 0.20f);
+
+/**
+ * ADRC second-order LPF cutoff frequency (rad/s) for IALADRC
+ *
+ * @min 0.1
+ * @max 500.0
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_CADRC_WLCUT, 314.159f); // 100*pi
+
+/**
+ * ADRC nonlinear saturation threshold for IALADRC
+ *
+ * @min 0.0
+ * @max 50.0
+ * @group HY CADRC
+ */
+PARAM_DEFINE_FLOAT(HY_CADRC_E0, 5.0f);
+
+/**
+ * ADRC enable switch
  *
  * @boolean
  * @group HY CADRC
@@ -50,55 +143,7 @@
 PARAM_DEFINE_INT32(HY_CADRC_EN, 1);
 
 /**
- * CADRC J0 (inertia-like parameter)
- *
- * @min 0.001
- * @group HY CADRC
- */
-PARAM_DEFINE_FLOAT(HY_CADRC_J0, 10.1746f);
-
-/**
- * CADRC kp1 (position loop gain)
- *
- * @min 0.0
- * @group HY CADRC
- */
-PARAM_DEFINE_FLOAT(HY_CADRC_KP1, 500.0f);
-
-/**
- * CADRC kp2 (rate loop gain)
- *
- * @min 0.0
- * @group HY CADRC
- */
-PARAM_DEFINE_FLOAT(HY_CADRC_KP2, 1000.0f);
-
-/**
- * CADRC omega_o1 (ESO bandwidth for position loop)
- *
- * @min 0.0
- * @group HY CADRC
- */
-PARAM_DEFINE_FLOAT(HY_CADRC_O1, 15.0f);
-
-/**
- * CADRC omega_o2 (ESO bandwidth for rate loop)
- *
- * @min 0.0
- * @group HY CADRC
- */
-PARAM_DEFINE_FLOAT(HY_CADRC_O2, 15.0f);
-
-/**
- * CADRC alpha (adaptive gain). 0 disables adaptation
- *
- * @min 0.0
- * @group HY CADRC
- */
-PARAM_DEFINE_FLOAT(HY_CADRC_ALP, 0.0f);
-
-/**
- * CADRC tau override (s). 0 = use dt from gyro/scheduler
+ * ADRC tau override (s). 0 = use dt from gyro/scheduler
  *
  * @min 0.0
  * @max 0.02
@@ -107,7 +152,7 @@ PARAM_DEFINE_FLOAT(HY_CADRC_ALP, 0.0f);
 PARAM_DEFINE_FLOAT(HY_CADRC_TAU, 0.0025f);
 
 /**
- * Scale CADRC Uc to normalized torque [-1, 1]
+ * Scale ADRC Uc to normalized torque [-1, 1]
  *
  * @min 0.000001
  * @group HY CADRC
@@ -119,7 +164,7 @@ PARAM_DEFINE_FLOAT(HY_CADRC_U_SCALE, 0.001f);
  *
  * @min 0.0
  * @max 80.0
- * @group HY CADRC
+ * @group Hydro Rate Control
  */
 PARAM_DEFINE_FLOAT(HY_ROLL_MAX, 30.0f);
 
@@ -128,10 +173,9 @@ PARAM_DEFINE_FLOAT(HY_ROLL_MAX, 30.0f);
  *
  * @min 0.0
  * @max 80.0
- * @group HY CADRC
+ * @group Hydro Rate Control
  */
 PARAM_DEFINE_FLOAT(HY_PITCH_MAX, 20.0f);
-
 
 
 

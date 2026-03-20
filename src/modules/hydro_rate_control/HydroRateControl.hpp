@@ -77,7 +77,11 @@
 #include <uORB/topics/hydro_depth_control_message.h>
 
 #include <uORB/topics/hydro_cadrc_control_message.h>
-#include "CADRC.h"
+
+// 引入三个新控制器头文件（类名与文件名对应）
+#include "LADRC.h"      // 提供 LADRCController
+#include "ILADRC.h"     // 提供 ILADRCController
+#include "IALADRC.h"    // 提供 IALADRCController
 
 using matrix::Eulerf;
 using matrix::Quatf;
@@ -105,6 +109,30 @@ public:
 	bool init();
 
 private:
+	// ADRC 控制器类型枚举
+	enum class ADRCType : uint8_t {
+		LADRC = 1,
+		ILADRC = 2,
+		IALADRC = 3
+	};
+
+	// 当前使用的控制器类型
+	ADRCType _current_adrc_type{ADRCType::LADRC};
+
+	// 三个控制器的实例（使用原始指针，避免对 std::unique_ptr 的依赖）
+	LADRCController* _ladrc_roll{nullptr};
+	LADRCController* _ladrc_pitch{nullptr};
+	ILADRCController* _iladrc_roll{nullptr};
+	ILADRCController* _iladrc_pitch{nullptr};
+	IALADRCController* _ialadrc_roll{nullptr};
+	IALADRCController* _ialadrc_pitch{nullptr};
+
+	// 辅助函数：重置当前使用的控制器
+	void resetADRCControllers();
+
+	// 辅助函数：更新所有控制器参数（包括类型切换）
+	void updateADRCParameters();
+
 	void Run() override;
 
 	uORB::SubscriptionCallbackWorkItem _vehicle_angular_velocity_sub{this, ORB_ID(vehicle_angular_velocity)};
@@ -142,13 +170,13 @@ private:
 
 	hydro_cadrc_control_message_s		_hydro_cadrc_control_message{};
 
-	//水翼部分的setpoint
+	// 水翼部分的 setpoint
 	vehicle_thrust_setpoint_s		_hydro_thrust_setpoint{};
 	vehicle_torque_setpoint_s		_hydro_torque_setpoint{};
 
 	float _thrust_sp_norm;
 
-	float _hsmc_x3{0}; //高阶滑模的积分项
+	float _hsmc_x3{0}; // 高阶滑模的积分项
 
 	perf_counter_t _loop_perf;
 
@@ -158,45 +186,41 @@ private:
 
 	float _battery_scale{1.0f};
 
-	//CADRC算法部分
-	ADRCController _cadrc_roll{};
-	ADRCController _cadrc_pitch{};
+	// 状态标记
 	uint8_t _prev_nav_state{vehicle_status_s::NAVIGATION_STATE_MAX};
 
-
 	DEFINE_PARAMETERS(
-		(ParamFloat<px4::params::HY_AIRSPD_MAX>) _param_hy_airspd_max,		//最大空速
-		(ParamFloat<px4::params::HY_AIRSPD_MIN>) _param_hy_airspd_min,		//最小空速
-		(ParamFloat<px4::params::HY_AIRSPD_STALL>) _param_hy_airspd_stall,	//失速空速
-		(ParamFloat<px4::params::HY_AIRSPD_TRIM>) _param_hy_airspd_trim,	//平衡空速
+		(ParamFloat<px4::params::HY_AIRSPD_MAX>) _param_hy_airspd_max,
+		(ParamFloat<px4::params::HY_AIRSPD_MIN>) _param_hy_airspd_min,
+		(ParamFloat<px4::params::HY_AIRSPD_STALL>) _param_hy_airspd_stall,
+		(ParamFloat<px4::params::HY_AIRSPD_TRIM>) _param_hy_airspd_trim,
 
-		(ParamFloat<px4::params::HY_ACRO_X_MAX>) _param_hy_acro_x_max,		//ACRO模式下各轴杆量最大时对应的角度变化率
+		(ParamFloat<px4::params::HY_ACRO_X_MAX>) _param_hy_acro_x_max,
 		(ParamFloat<px4::params::HY_ACRO_Y_MAX>) _param_hy_acro_y_max,
 		(ParamFloat<px4::params::HY_ACRO_Z_MAX>) _param_hy_acro_z_max,
-		(ParamInt<px4::params::HY_ACRO_YAW_EN>) _param_hy_acro_yaw_en,		//ACRO模式下是否启用YAW轴控制（不启用则yaw杆量映射到torque上）
+		(ParamInt<px4::params::HY_ACRO_YAW_EN>) _param_hy_acro_yaw_en,
 
-		(ParamInt<px4::params::HY_ARSP_SCALE_EN>) _param_hy_arsp_scale_en,	//启用空速系数（根据空速对控制器进行补偿）
+		(ParamInt<px4::params::HY_ARSP_SCALE_EN>) _param_hy_arsp_scale_en,
+		(ParamBool<px4::params::HY_BAT_SCALE_EN>) _param_hy_bat_scale_en,
 
-		(ParamBool<px4::params::HY_BAT_SCALE_EN>) _param_hy_bat_scale_en,	//启用电池系数（应该是当电池输出能力降低时，对推力输出进行放大）
-
-		(ParamFloat<px4::params::HY_DTRIM_P_VMAX>) _param_hy_dtrim_p_vmax,	//最大空速下相较于平衡空速还需要额外补偿多少pitch力矩才能使让pitch轴不动
+		(ParamFloat<px4::params::HY_DTRIM_P_VMAX>) _param_hy_dtrim_p_vmax,
 		(ParamFloat<px4::params::HY_DTRIM_P_VMIN>) _param_hy_dtrim_p_vmin,
 		(ParamFloat<px4::params::HY_DTRIM_R_VMAX>) _param_hy_dtrim_r_vmax,
 		(ParamFloat<px4::params::HY_DTRIM_R_VMIN>) _param_hy_dtrim_r_vmin,
 		(ParamFloat<px4::params::HY_DTRIM_Y_VMAX>) _param_hy_dtrim_y_vmax,
 		(ParamFloat<px4::params::HY_DTRIM_Y_VMIN>) _param_hy_dtrim_y_vmin,
 
-		(ParamFloat<px4::params::HY_MAN_P_SC>) _param_hy_man_p_sc,		//MANUAL模式下各轴杆量最大时对应的torque
+		(ParamFloat<px4::params::HY_MAN_P_SC>) _param_hy_man_p_sc,
 		(ParamFloat<px4::params::HY_MAN_R_SC>) _param_hy_man_r_sc,
 		(ParamFloat<px4::params::HY_MAN_Y_SC>) _param_hy_man_y_sc,
 
-		(ParamFloat<px4::params::HY_PR_FF>) _param_hy_pr_ff,			//pitch rate控制器的前馈、ki、imax、kp、kd
+		(ParamFloat<px4::params::HY_PR_FF>) _param_hy_pr_ff,
 		(ParamFloat<px4::params::HY_PR_I>) _param_hy_pr_i,
 		(ParamFloat<px4::params::HY_PR_IMAX>) _param_hy_pr_imax,
 		(ParamFloat<px4::params::HY_PR_P>) _param_hy_pr_p,
 		(ParamFloat<px4::params::HY_PR_D>) _param_hy_pr_d,
 
-		(ParamFloat<px4::params::HY_RLL_TO_YAW_FF>) _param_hy_rll_to_yaw_ff,	//将roll轴力矩直接前馈到yaw轴上
+		(ParamFloat<px4::params::HY_RLL_TO_YAW_FF>) _param_hy_rll_to_yaw_ff,
 		(ParamFloat<px4::params::HY_RR_FF>) _param_hy_rr_ff,
 		(ParamFloat<px4::params::HY_RR_I>) _param_hy_rr_i,
 		(ParamFloat<px4::params::HY_RR_IMAX>) _param_hy_rr_imax,
@@ -209,20 +233,20 @@ private:
 		(ParamFloat<px4::params::HY_YR_P>) _param_hy_yr_p,
 		(ParamFloat<px4::params::HY_YR_D>) _param_hy_yr_d,
 
-		(ParamFloat<px4::params::TRIM_PITCH>) _param_trim_pitch,		//平衡空速下需要补偿多少pitch力矩才能使让pitch轴不动
+		(ParamFloat<px4::params::TRIM_PITCH>) _param_trim_pitch,
 		(ParamFloat<px4::params::TRIM_ROLL>) _param_trim_roll,
 		(ParamFloat<px4::params::TRIM_YAW>) _param_trim_yaw,
 
-		(ParamFloat<px4::params::HY_THR_TO_PIT_FF>) _param_thr_to_pit_ff,	//推力前馈到pit轴力矩上
-		(ParamFloat<px4::params::HY_ATTACK_FF>) _param_attack_ff,		//机身攻角补偿
+		(ParamFloat<px4::params::HY_THR_TO_PIT_FF>) _param_thr_to_pit_ff,
+		(ParamFloat<px4::params::HY_ATTACK_FF>) _param_attack_ff,
 
-		//深度控制
+		// 深度控制
 		(ParamInt<px4::params::HY_DC_MODE>) _param_hy_dc_mode,
 		(ParamFloat<px4::params::HY_DC_FF>) _param_hy_dc_ff,
 		(ParamFloat<px4::params::HY_DC_SP>) _param_hy_dc_sp,
 		(ParamFloat<px4::params::HY_DC_MAX_THR>) _param_hy_dc_max_thr,
 
-		//非光滑反馈
+		// 非光滑反馈
 		(ParamFloat<px4::params::HY_NSF_PT>) _param_hy_nsf_pt,
 		(ParamFloat<px4::params::HY_NSF_NORM>) _param_hy_nsf_norm,
 		(ParamFloat<px4::params::HY_NSF_POWER>) _param_hy_nsf_power,
@@ -230,7 +254,7 @@ private:
 		(ParamFloat<px4::params::HY_NSF_UMAX>) _param_hy_nsf_umax,
 		(ParamFloat<px4::params::HY_NSF_UMIN>) _param_hy_nsf_umin,
 
-		//高阶滑模
+		// 高阶滑模
 		(ParamFloat<px4::params::HY_HSMC_ALPHA>) _param_hy_hsmc_alpha,
 		(ParamFloat<px4::params::HY_HSMC_ETA>) _param_hy_hsmc_eta,
 		(ParamFloat<px4::params::HY_HSMC_MASS>) _param_hy_hsmc_mass,
@@ -238,38 +262,37 @@ private:
 		(ParamFloat<px4::params::HY_HSMC_IMAX>) _param_hy_hsmc_imax,
 		(ParamFloat<px4::params::HY_HSMC_IMIN>) _param_hy_hsmc_imin,
 
-		//手动
+		// 手动
 		(ParamFloat<px4::params::HY_MAN_RATIO>) _param_hy_man_ratio,
 
-
-		//CADRC
+		// ADRC 控制器参数（新增）
 		(ParamInt<px4::params::HY_CADRC_EN>) _param_hy_cadrc_en,
-		(ParamFloat<px4::params::HY_CADRC_J0>) _param_hy_cadrc_j0,
-		(ParamFloat<px4::params::HY_CADRC_KP1>) _param_hy_cadrc_kp1,
-		(ParamFloat<px4::params::HY_CADRC_KP2>) _param_hy_cadrc_kp2,
-		(ParamFloat<px4::params::HY_CADRC_O1>) _param_hy_cadrc_o1,
-		(ParamFloat<px4::params::HY_CADRC_O2>) _param_hy_cadrc_o2,
-		(ParamFloat<px4::params::HY_CADRC_ALP>) _param_hy_cadrc_alp,
+		(ParamInt<px4::params::HY_CADRC_TYPE>) _param_hy_cadrc_type,
+		(ParamFloat<px4::params::HY_CADRC_B0>) _param_hy_cadrc_b0,
+		(ParamFloat<px4::params::HY_CADRC_WC>) _param_hy_cadrc_wc,
+		(ParamFloat<px4::params::HY_CADRC_WO>) _param_hy_cadrc_wo,
+		(ParamFloat<px4::params::HY_CADRC_WO_MIN>) _param_hy_cadrc_wo_min,
+		(ParamFloat<px4::params::HY_CADRC_WO_MAX>) _param_hy_cadrc_wo_max,
+		(ParamFloat<px4::params::HY_CADRC_WCUT>) _param_hy_cadrc_wcut,
+		(ParamFloat<px4::params::HY_CADRC_ETA>) _param_hy_cadrc_eta,
+		(ParamFloat<px4::params::HY_CADRC_WLCUT>) _param_hy_cadrc_wlcut,
+		(ParamFloat<px4::params::HY_CADRC_E0>) _param_hy_cadrc_e0,
 		(ParamFloat<px4::params::HY_CADRC_TAU>) _param_hy_cadrc_tau,
 		(ParamFloat<px4::params::HY_CADRC_U_SCALE>) _param_hy_cadrc_u_scale,
 		(ParamFloat<px4::params::HY_ROLL_MAX>) _param_hy_roll_max,
 		(ParamFloat<px4::params::HY_PITCH_MAX>) _param_hy_pitch_max,
 
-
-
-		//引用外部参数
-		(ParamFloat<px4::params::HY_RT_MAX_THRUST>) _param_hy_rt_max_thrust	//单个水下推进器最大推力
-
+		// 外部参数
+		(ParamFloat<px4::params::HY_RT_MAX_THRUST>) _param_hy_rt_max_thrust
 	)
 
-	RateControl _rate_control; ///< class for rate control calculations
-
+	RateControl _rate_control; ///< 备用 PID 控制器
 
 	/**
 	 * Update our local parameter cache.
 	 */
-	int		parameters_update();
+	int parameters_update();
 
-	float 		get_airspeed_and_update_scaling();
-	void		vehicle_manual_poll();
+	float get_airspeed_and_update_scaling();
+	void vehicle_manual_poll();
 };

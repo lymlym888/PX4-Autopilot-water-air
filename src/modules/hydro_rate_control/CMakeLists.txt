@@ -37,8 +37,12 @@ px4_add_module(
 	SRCS
 		HydroRateControl.cpp
 		HydroRateControl.hpp
-		CADRC.cpp
-		CADRC.h
+		LADRC.cpp
+		LADRC.h
+		ILADRC.cpp
+		ILADRC.h
+		IALADRC.cpp
+		IALADRC.h
 	DEPENDS
 		px4_work_queue
 		RateControl
