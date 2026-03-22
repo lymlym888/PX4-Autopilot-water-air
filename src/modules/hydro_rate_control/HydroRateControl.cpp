@@ -276,15 +276,31 @@ void HydroRateControl::Run()
 		}
 		_prev_nav_state = _vehicle_status.nav_state;
 
-		// 手动控制输入处理
+		// // 手动控制输入处理
+		// manual_control_setpoint_s manual_sp{};
+		// const bool got_manual = _manual_control_setpoint_sub.update(&manual_sp);
+		// if (got_manual && manual_sp.valid && manual_sp.timestamp != 0) {
+		// 	_manual_control_setpoint = manual_sp;
+		// } else {
+		// 	_manual_control_setpoint = {};
+		// 	_manual_control_setpoint.valid = false;
+		// }
+
+		//---------------------------------小改动，为了无遥控测试用---------------------------------------
+		// // //读手动操控信息
+		// _manual_control_setpoint_sub.copy(&_manual_control_setpoint);
+		// 读手动操控信息：如果没检测到(未发布/无效)，就用0
 		manual_control_setpoint_s manual_sp{};
 		const bool got_manual = _manual_control_setpoint_sub.update(&manual_sp);
+
 		if (got_manual && manual_sp.valid && manual_sp.timestamp != 0) {
 			_manual_control_setpoint = manual_sp;
 		} else {
+			// 没RC/无效 -> 全部置0，避免用到脏数据
 			_manual_control_setpoint = {};
 			_manual_control_setpoint.valid = false;
 		}
+		//----------------------------------结束--------------------------------------------------------
 
 		// ACRO 模式
 		if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO) {
