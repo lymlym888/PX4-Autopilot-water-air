@@ -170,7 +170,7 @@ void ILADRCController::update(float P_current, float P_target, float Wx_meas, fl
 
     _x1_hat = math::constrain(_x1_hat, -1e6f, 1e6f);
     _x2_hat = math::constrain(_x2_hat, -1e6f, 1e6f);
-    _x3_hat = math::constrain(_x3_hat, -1e6f, 1e6f);
+    _x3_hat = math::constrain(_x3_hat, -50.0f, 50.0f);
 
     float e1 = P_target - _x1_hat;
     float e2 = 0.0f - _x2_hat;

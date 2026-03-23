@@ -58,7 +58,7 @@ void LADRCController::update(float P_current, float P_target, float Wx_meas, flo
     // 状态限幅
     _x1_hat = math::constrain(_x1_hat, -1e6f, 1e6f);
     _x2_hat = math::constrain(_x2_hat, -1e6f, 1e6f);
-    _x3_hat = math::constrain(_x3_hat, -1e6f, 1e6f);
+    _x3_hat = math::constrain(_x3_hat, -50.0f, 50.0f);
 
     // 状态误差（期望速度为零）
     float e1 = P_target - _x1_hat;
