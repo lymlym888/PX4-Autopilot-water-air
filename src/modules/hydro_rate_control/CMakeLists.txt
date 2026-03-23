@@ -37,8 +37,8 @@ px4_add_module(
 	SRCS
 		HydroRateControl.cpp
 		HydroRateControl.hpp
-		CADRC.cpp
-		CADRC.h
+		MESO.cpp
+		MESO.h
 	DEPENDS
 		px4_work_queue
 		RateControl

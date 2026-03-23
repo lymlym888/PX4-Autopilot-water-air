@@ -42,84 +42,161 @@
 
 
 /**
- * Enable CADRC in STAB mode
+ * Enable MESO in STAB mode
  *
  * @boolean
- * @group HY CADRC
+ * @group HY MESO
  */
-PARAM_DEFINE_INT32(HY_CADRC_EN, 1);
+PARAM_DEFINE_INT32(HY_MESO_EN, 1);
 
 /**
- * CADRC J0 (inertia-like parameter)
+ * MESO type (1-4)
  *
+ * 1: MESO1 (standard)
+ * 2: MESO2 (alternative)
+ * 3: MESO3 (nonlinear)
+ * 4: MESO4 (simplified)
+ *
+ * @min 1
+ * @max 4
+ * @group HY MESO
+ */
+PARAM_DEFINE_INT32(HY_MESO_TYPE, 1);
+
+/**
+ * Adaptive bandwidth enabled
+ *
+ * If true, bandwidth is automatically adjusted based on disturbance and reference.
+ * If false, fixed bandwidth HY_MESO_OMEGA_FIXED is used.
+ *
+ * @boolean
+ * @group HY MESO
+ */
+PARAM_DEFINE_INT32(HY_MESO_ADAPTIVE, 1);
+
+/**
+ * Fixed bandwidth when adaptive is disabled (rad/s)
+ *
+ * @min 1.0
+ * @max 50.0
+ * @group HY MESO
+ */
+PARAM_DEFINE_FLOAT(HY_MESO_OMEGA, 15.0f);
+
+/**
+ * Minimum bandwidth for adaptive mode (rad/s)
+ *
+ * @min 1.0
+ * @max 50.0
+ * @group HY MESO
+ */
+PARAM_DEFINE_FLOAT(HY_MESO_OMEGA_MIN, 8.0f);
+
+/**
+ * Maximum bandwidth for adaptive mode (rad/s)
+ *
+ * @min 1.0
+ * @max 50.0
+ * @group HY MESO
+ */
+PARAM_DEFINE_FLOAT(HY_MESO_OMEGA_MAX, 24.0f);
+
+/**
+ * Model parameter k_phi1 (damping)
+ *
+ * Typically negative (e.g., -0.8 to -1.5). Defines the natural dynamics.
+ * @group HY MESO
+ */
+PARAM_DEFINE_FLOAT(HY_MESO_K_PHI1, -0.8f);
+
+/**
+ * Model parameter k_phi2 (control effectiveness)
+ *
+ * Typically around 10.1746. Relates control input to angular acceleration.
  * @min 0.001
- * @group HY CADRC
+ * @group HY MESO
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_J0, 10.1746f);
+PARAM_DEFINE_FLOAT(HY_MESO_K_PHI2, 10.1746f);
 
 /**
- * CADRC kp1 (position loop gain)
+ * Proportional gain (Kp) for PD controller
  *
  * @min 0.0
- * @group HY CADRC
+ * @group HY MESO
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_KP1, 500.0f);
+PARAM_DEFINE_FLOAT(HY_MESO_KP, 180.0f);
 
 /**
- * CADRC kp2 (rate loop gain)
+ * Derivative gain (Kd) for PD controller
  *
  * @min 0.0
- * @group HY CADRC
+ * @group HY MESO
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_KP2, 1000.0f);
+PARAM_DEFINE_FLOAT(HY_MESO_KD, 18.0f);
 
 /**
- * CADRC omega_o1 (ESO bandwidth for position loop)
+ * Gamma for sigmoid bandwidth mapping
  *
- * @min 0.0
- * @group HY CADRC
+ * Controls slope of sigmoid function. Larger value gives sharper transition.
+ * @min 0.01
+ * @max 1.0
+ * @group HY MESO
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_O1, 15.0f);
+PARAM_DEFINE_FLOAT(HY_MESO_GAMMA, 0.28f);
 
 /**
- * CADRC omega_o2 (ESO bandwidth for rate loop)
+ * Midpoint of sigmoid for bandwidth mapping
  *
+ * The adaptive metric value where bandwidth is halfway between min and max.
  * @min 0.0
- * @group HY CADRC
+ * @max 1.0
+ * @group HY MESO
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_O2, 15.0f);
+PARAM_DEFINE_FLOAT(HY_MESO_BAND_MID, 0.10f);
 
 /**
- * CADRC alpha (adaptive gain). 0 disables adaptation
+ * Low-pass filter cutoff for adaptive metric (rad/s)
  *
- * @min 0.0
- * @group HY CADRC
+ * @min 1.0
+ * @max 100.0
+ * @group HY MESO
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_ALP, 0.0f);
+PARAM_DEFINE_FLOAT(HY_MESO_LPF_C, 18.0f);
 
 /**
- * CADRC tau override (s). 0 = use dt from gyro/scheduler
+ * Control surface deflection limit (deg)
+ *
+ * Maximum absolute aileron/elevator deflection.
+ * @min 0.0
+ * @max 60.0
+ * @group HY MESO
+ */
+PARAM_DEFINE_FLOAT(HY_MESO_DELTA_LIM_DEG, 30.0f);
+
+/**
+ * Scale MESO control output to normalized torque [-1, 1]
+ *
+ * Output = MESO_control * HY_MESO_U_SCALE, then saturated to [-1,1].
+ * @min 0.000001
+ * @group HY MESO
+ */
+PARAM_DEFINE_FLOAT(HY_MESO_U_SCALE, 0.001f);
+
+/**
+ * Override time step for MESO (s). 0 = use actual dt from gyro/scheduler.
  *
  * @min 0.0
  * @max 0.02
- * @group HY CADRC
+ * @group HY MESO
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_TAU, 0.0025f);
-
-/**
- * Scale CADRC Uc to normalized torque [-1, 1]
- *
- * @min 0.000001
- * @group HY CADRC
- */
-PARAM_DEFINE_FLOAT(HY_CADRC_U_SCALE, 0.001f);
+PARAM_DEFINE_FLOAT(HY_MESO_TAU, 0.0025f);
 
 /**
  * STAB max roll angle from RC (deg)
  *
  * @min 0.0
  * @max 80.0
- * @group HY CADRC
+ * @group HY MESO
  */
 PARAM_DEFINE_FLOAT(HY_ROLL_MAX, 30.0f);
 
@@ -128,7 +205,7 @@ PARAM_DEFINE_FLOAT(HY_ROLL_MAX, 30.0f);
  *
  * @min 0.0
  * @max 80.0
- * @group HY CADRC
+ * @group HY MESO
  */
 PARAM_DEFINE_FLOAT(HY_PITCH_MAX, 20.0f);
 
