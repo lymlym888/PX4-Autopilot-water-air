@@ -98,6 +98,9 @@ void MESOController::update(float phi_current, float phi_ref, float dt, float me
     _z1 = z1n;
     _z2 = z2n;
     _z3 = z3n;
+    // 限制扰动估计值，防止过大导致控制发散（类似于 CADRC 中的限幅）
+    if (_z3 > 50.0f) _z3 = 50.0f;
+    if (_z3 < -50.0f) _z3 = -50.0f;
     _z4 = z4n;
 
     _p_est = _z2; // 可使用 measured_omega 替代
