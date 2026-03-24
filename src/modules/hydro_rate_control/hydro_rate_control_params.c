@@ -90,7 +90,7 @@ PARAM_DEFINE_FLOAT(HY_MESO_OMEGA, 15.0f);
  * @max 50.0
  * @group HY MESO
  */
-PARAM_DEFINE_FLOAT(HY_MESO_OMEGA_MIN, 8.0f);
+PARAM_DEFINE_FLOAT(HY_MESO_OMG_MIN, 8.0f);
 
 /**
  * Maximum bandwidth for adaptive mode (rad/s)
@@ -99,7 +99,7 @@ PARAM_DEFINE_FLOAT(HY_MESO_OMEGA_MIN, 8.0f);
  * @max 50.0
  * @group HY MESO
  */
-PARAM_DEFINE_FLOAT(HY_MESO_OMEGA_MAX, 24.0f);
+PARAM_DEFINE_FLOAT(HY_MESO_OMG_MAX, 24.0f);
 
 /**
  * Model parameter k_phi1 (damping)
@@ -171,7 +171,7 @@ PARAM_DEFINE_FLOAT(HY_MESO_LPF_C, 18.0f);
  * @max 60.0
  * @group HY MESO
  */
-PARAM_DEFINE_FLOAT(HY_MESO_DELTA_LIM_DEG, 30.0f);
+PARAM_DEFINE_FLOAT(HY_MESO_DL_DEG, 30.0f);
 
 /**
  * Scale MESO control output to normalized torque [-1, 1]

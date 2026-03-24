@@ -146,18 +146,12 @@ private:
 	float _battery_scale{1.0f};
 
 	// MESO算法部分（替换CADRC）
-	std::unique_ptr<MESOController> _meso_roll;
-	std::unique_ptr<MESOController> _meso_pitch;
+	MESOController* _meso_roll{nullptr};
+	MESOController* _meso_pitch{nullptr};
 	uint8_t _prev_nav_state{vehicle_status_s::NAVIGATION_STATE_MAX};
 
 	// 辅助函数：根据当前参数创建对应的MESO控制器
-	void createMesoControllers();
 
-	RateControl _rate_control;
-
-	int		parameters_update();
-	float 		get_airspeed_and_update_scaling();
-	void		vehicle_manual_poll();
 
 	DEFINE_PARAMETERS(
 		(ParamFloat<px4::params::HY_AIRSPD_MAX>) _param_hy_airspd_max,
@@ -220,23 +214,24 @@ private:
 		(ParamFloat<px4::params::HY_RT_MAX_THRUST>) _param_hy_rt_max_thrust,
 
 		// MESO参数（替换CADRC）
-		(ParamInt<px4::params::HY_MESO_EN>) _param_hy_meso_en,
-		(ParamInt<px4::params::HY_MESO_TYPE>) _param_hy_meso_type,        // 1-4
-		(ParamBool<px4::params::HY_MESO_ADAPTIVE>) _param_hy_meso_adaptive,
-		(ParamFloat<px4::params::HY_MESO_OMEGA_FIXED>) _param_hy_meso_omega_fixed,
-		(ParamFloat<px4::params::HY_MESO_OMEGA_MIN>) _param_hy_meso_omega_min,
-		(ParamFloat<px4::params::HY_MESO_OMEGA_MAX>) _param_hy_meso_omega_max,
-		(ParamFloat<px4::params::HY_MESO_K_PHI1>) _param_hy_meso_k_phi1,
-		(ParamFloat<px4::params::HY_MESO_K_PHI2>) _param_hy_meso_k_phi2,
-		(ParamFloat<px4::params::HY_MESO_KP>) _param_hy_meso_kp,
-		(ParamFloat<px4::params::HY_MESO_KD>) _param_hy_meso_kd,
-		(ParamFloat<px4::params::HY_MESO_GAMMA>) _param_hy_meso_gamma,
+		(ParamInt<px4::params::HY_MESO_EN>)        _param_hy_meso_en,
+		(ParamInt<px4::params::HY_MESO_TYPE>)      _param_hy_meso_type,
+		(ParamInt<px4::params::HY_MESO_ADAPTIVE>)  _param_hy_meso_adaptive,
+		(ParamFloat<px4::params::HY_MESO_OMEGA>)   _param_hy_meso_omega,
+		(ParamFloat<px4::params::HY_MESO_OMG_MIN>) _param_hy_meso_omg_min,
+		(ParamFloat<px4::params::HY_MESO_OMG_MAX>) _param_hy_meso_omg_max,
+		(ParamFloat<px4::params::HY_MESO_K_PHI1>)  _param_hy_meso_k_phi1,
+		(ParamFloat<px4::params::HY_MESO_K_PHI2>)  _param_hy_meso_k_phi2,
+		(ParamFloat<px4::params::HY_MESO_KP>)      _param_hy_meso_kp,
+		(ParamFloat<px4::params::HY_MESO_KD>)      _param_hy_meso_kd,
+		(ParamFloat<px4::params::HY_MESO_GAMMA>)   _param_hy_meso_gamma,
 		(ParamFloat<px4::params::HY_MESO_BAND_MID>) _param_hy_meso_band_mid,
-		(ParamFloat<px4::params::HY_MESO_LPF_C>) _param_hy_meso_lpf_c,
-		(ParamFloat<px4::params::HY_MESO_DELTA_LIM_DEG>) _param_hy_meso_delta_lim_deg,
+		(ParamFloat<px4::params::HY_MESO_LPF_C>)   _param_hy_meso_lpf_c,
+		(ParamFloat<px4::params::HY_MESO_DL_DEG>)  _param_hy_meso_dl_deg,   // 注意与参数文件中的名称一致
 		(ParamFloat<px4::params::HY_MESO_U_SCALE>) _param_hy_meso_u_scale,
-		(ParamFloat<px4::params::HY_ROLL_MAX>) _param_hy_roll_max,
-		(ParamFloat<px4::params::HY_PITCH_MAX>) _param_hy_pitch_max
+		(ParamFloat<px4::params::HY_MESO_TAU>)     _param_hy_meso_tau,
+		(ParamFloat<px4::params::HY_ROLL_MAX>)     _param_hy_roll_max,
+		(ParamFloat<px4::params::HY_PITCH_MAX>)    _param_hy_pitch_max
 	)
 
 
@@ -247,7 +242,7 @@ private:
 	 * Update our local parameter cache.
 	 */
 	int		parameters_update();
-
+	void createMesoControllers();
 	float 		get_airspeed_and_update_scaling();
 	void		vehicle_manual_poll();
 };

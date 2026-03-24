@@ -1,19 +1,42 @@
 #include "MESO.h"
 #include <mathlib/mathlib.h>
 
-// 基类构造
+#ifndef M_PI_F
+#define M_PI_F 3.14159265358979323846f
+#endif
+
+// 基类构造（严格按照成员声明顺序）
 MESOController::MESOController(MESOType type, bool adaptive,
                                float k_phi1, float k_phi2,
                                float Kp, float Kd,
                                float omega_min, float omega_max,
                                float delta_lim_deg,
                                float gamma, float band_mid, float lpf_c)
-    : _type(type), _adaptive(adaptive),
-      _k_phi1(k_phi1), _k_phi2(k_phi2),
-      _Kp(Kp), _Kd(Kd),
-      _gamma(gamma), _band_mid(band_mid), _lpf_c(lpf_c),
-      _omega_min(omega_min), _omega_max(omega_max),
-      _delta_lim_rad(delta_lim_deg * M_PI / 180.0f)
+    : _type(type),
+      _adaptive(adaptive),
+      _omega_fixed(0.0f),                     // 默认值，后续可由 setOmegaFixed 修改
+      _delta_lim_rad(delta_lim_deg * M_PI_F / 180.0f),
+      _k_phi1(k_phi1),
+      _k_phi2(k_phi2),
+      _Kp(Kp),
+      _Kd(Kd),
+      _gamma(gamma),
+      _band_mid(band_mid),
+      _lpf_c(lpf_c),
+      _omega_min(omega_min),
+      _omega_max(omega_max),
+      _z1(0.0f),
+      _z2(0.0f),
+      _z3(0.0f),
+      _z4(0.0f),
+      _omega(0.0f),           // 暂为0，reset() 中会覆盖
+      _adapt_metric(0.0f),
+      _delta_a(0.0f),
+      _phi_ref_dot(0.0f),
+      _phi_ref_ddot(0.0f),
+      _p_est(0.0f),
+      _prev_u(0.0f),
+      _adapt_metric_prev(0.0f)
 {
     reset();
 }
@@ -24,7 +47,14 @@ void MESOController::reset()
     _z2 = 0.0f;
     _z3 = 0.0f;
     _z4 = 0.0f;
-    _omega = _adaptive ? _omega_min : _omega_fixed;
+
+    if (_adaptive) {
+        _omega = _omega_min;
+    } else {
+        // 如果未设置固定带宽，默认使用 omega_min 作为安全的默认值
+        _omega = (_omega_fixed > 0.0f) ? _omega_fixed : _omega_min;
+    }
+
     _adapt_metric = 0.0f;
     _delta_a = 0.0f;
     _phi_ref_dot = 0.0f;
@@ -103,6 +133,7 @@ void MESOController::update(float phi_current, float phi_ref, float dt, float me
     _prev_u = u;
 }
 
+// 以下各派生类的 mesoStep 实现保持不变
 // ---------- MESO1 ----------
 void MESO1Controller::mesoStep(float y, float u_prev, float z1, float z2, float z3, float z4,
                                float omega, float tau, float& z1n, float& z2n, float& z3n, float& z4n)

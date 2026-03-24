@@ -40,16 +40,17 @@ protected:
 
     void updateAdaptiveBandwidth(float dt, float z3, float p_est, float phi_ref_dot);
 
+    // 成员变量声明顺序与构造函数初始化列表一致，避免 -Wreorder
     MESOType _type;
     bool _adaptive;
-    float _omega_fixed;       // 固定带宽值（当adaptive=false时使用）
-    float _delta_lim_rad;     // 舵面限制（弧度）
+    float _omega_fixed;           // 固定带宽值（当 adaptive=false 时使用）
+    float _delta_lim_rad;         // 舵面限制（弧度）
 
-    float _k_phi1;            // 被控对象参数
-    float _k_phi2;            // 被控对象参数
+    float _k_phi1;                // 被控对象参数
+    float _k_phi2;                // 被控对象参数
 
-    float _Kp;                // 比例增益
-    float _Kd;                // 微分增益
+    float _Kp;                    // 比例增益
+    float _Kd;                    // 微分增益
 
     // 自适应带宽参数
     float _gamma;
@@ -59,13 +60,13 @@ protected:
     float _omega_max;
 
     // 状态变量
-    float _z1{0.0f};          // 角度估计
-    float _z2{0.0f};          // 角速度估计
-    float _z3{0.0f};          // 总扰动估计
-    float _z4{0.0f};          // 辅助状态（MESO3/4使用）
-    float _omega{0.0f};       // 当前带宽
-    float _adapt_metric{0.0f};// 自适应度量
-    float _delta_a{0.0f};     // 控制输出
+    float _z1{0.0f};              // 角度估计
+    float _z2{0.0f};              // 角速度估计
+    float _z3{0.0f};              // 总扰动估计
+    float _z4{0.0f};              // 辅助状态（MESO3/4 使用）
+    float _omega{0.0f};           // 当前带宽
+    float _adapt_metric{0.0f};    // 自适应度量
+    float _delta_a{0.0f};         // 控制输出
 
     // 辅助变量
     float _phi_ref_dot{0.0f};
@@ -76,7 +77,7 @@ protected:
     float _adapt_metric_prev{0.0f};
 };
 
-// 四种MESO派生类
+// ---------- 派生类 ----------
 class MESO1Controller : public MESOController {
 public:
     MESO1Controller(bool adaptive = true,

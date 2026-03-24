@@ -51,6 +51,10 @@ HydroRateControl::HydroRateControl() :
 
 HydroRateControl::~HydroRateControl()
 {
+	// 释放 MESO 控制器
+	delete _meso_roll;
+	delete _meso_pitch;
+
 	perf_free(_loop_perf);
 }
 
@@ -73,12 +77,14 @@ int HydroRateControl::parameters_update()
 	_rate_control.setIntegratorLimit(Vector3f(_param_hy_rr_imax.get(), _param_hy_pr_imax.get(), _param_hy_yr_imax.get()));
 	_rate_control.setFeedForwardGain(Vector3f(0.f, 0.f, 0.f));
 
-	// 如果 MESO 类型或参数改变，重新创建控制器
-	if (_param_hy_meso_en.get() && (_meso_roll == nullptr || _meso_pitch == nullptr)) {
-		createMesoControllers();
-	} else if (!_param_hy_meso_en.get()) {
-		_meso_roll.reset();
-		_meso_pitch.reset();
+	    // 如果 MESO 启用，重新创建控制器；否则释放资源
+	if (_param_hy_meso_en.get()) {
+		createMesoControllers();  // 该函数内部会先 delete 旧对象再 new
+	} else {
+		delete _meso_roll;
+		delete _meso_pitch;
+		_meso_roll = nullptr;
+		_meso_pitch = nullptr;
 	}
 
 	return PX4_OK;
@@ -86,11 +92,17 @@ int HydroRateControl::parameters_update()
 
 void HydroRateControl::createMesoControllers()
 {
+	// 释放已有对象
+	delete _meso_roll;
+	delete _meso_pitch;
+	_meso_roll = nullptr;
+	_meso_pitch = nullptr;
+
 	MESOController::MESOType type = static_cast<MESOController::MESOType>(_param_hy_meso_type.get());
-	bool adaptive = _param_hy_meso_adaptive.get();
-	float omega_fixed = _param_hy_meso_omega_fixed.get();
-	float omega_min = _param_hy_meso_omega_min.get();
-	float omega_max = _param_hy_meso_omega_max.get();
+	bool adaptive = (_param_hy_meso_adaptive.get() != 0);
+	float omega_fixed = _param_hy_meso_omega.get();
+	float omega_min = _param_hy_meso_omg_min.get();
+	float omega_max = _param_hy_meso_omg_max.get();
 	float k_phi1 = _param_hy_meso_k_phi1.get();
 	float k_phi2 = _param_hy_meso_k_phi2.get();
 	float Kp = _param_hy_meso_kp.get();
@@ -98,38 +110,35 @@ void HydroRateControl::createMesoControllers()
 	float gamma = _param_hy_meso_gamma.get();
 	float band_mid = _param_hy_meso_band_mid.get();
 	float lpf_c = _param_hy_meso_lpf_c.get();
-	float delta_lim_deg = _param_hy_meso_delta_lim_deg.get();
+	float delta_lim_deg = _param_hy_meso_dl_deg.get();
 
-	// 根据类型创建对应的控制器
 	switch (type) {
 	case MESOController::MESO1:
-		_meso_roll = std::make_unique<MESO1Controller>(adaptive, k_phi1, k_phi2, Kp, Kd,
-			omega_min, omega_max, delta_lim_deg, gamma, band_mid, lpf_c);
-		_meso_pitch = std::make_unique<MESO1Controller>(adaptive, k_phi1, k_phi2, Kp, Kd,
-			omega_min, omega_max, delta_lim_deg, gamma, band_mid, lpf_c);
+		_meso_roll = new MESO1Controller(adaptive, k_phi1, k_phi2, Kp, Kd,
+		omega_min, omega_max, delta_lim_deg, gamma, band_mid, lpf_c);
+		_meso_pitch = new MESO1Controller(adaptive, k_phi1, k_phi2, Kp, Kd,
+		omega_min, omega_max, delta_lim_deg, gamma, band_mid, lpf_c);
 		break;
 	case MESOController::MESO2:
-		_meso_roll = std::make_unique<MESO2Controller>(adaptive, k_phi1, k_phi2, Kp, Kd,
-			omega_min, omega_max, delta_lim_deg, gamma, band_mid, lpf_c);
-		_meso_pitch = std::make_unique<MESO2Controller>(adaptive, k_phi1, k_phi2, Kp, Kd,
-			omega_min, omega_max, delta_lim_deg, gamma, band_mid, lpf_c);
+		_meso_roll = new MESO2Controller(adaptive, k_phi1, k_phi2, Kp, Kd,
+		omega_min, omega_max, delta_lim_deg, gamma, band_mid, lpf_c);
+		_meso_pitch = new MESO2Controller(adaptive, k_phi1, k_phi2, Kp, Kd,
+		omega_min, omega_max, delta_lim_deg, gamma, band_mid, lpf_c);
 		break;
 	case MESOController::MESO3:
-		_meso_roll = std::make_unique<MESO3Controller>(adaptive, k_phi1, k_phi2, Kp, Kd,
-			omega_min, omega_max, delta_lim_deg, gamma, band_mid, lpf_c);
-		_meso_pitch = std::make_unique<MESO3Controller>(adaptive, k_phi1, k_phi2, Kp, Kd,
-			omega_min, omega_max, delta_lim_deg, gamma, band_mid, lpf_c);
+		_meso_roll = new MESO3Controller(adaptive, k_phi1, k_phi2, Kp, Kd,
+		omega_min, omega_max, delta_lim_deg, gamma, band_mid, lpf_c);
+		_meso_pitch = new MESO3Controller(adaptive, k_phi1, k_phi2, Kp, Kd,
+		omega_min, omega_max, delta_lim_deg, gamma, band_mid, lpf_c);
 		break;
 	case MESOController::MESO4:
-		_meso_roll = std::make_unique<MESO4Controller>(adaptive, k_phi1, k_phi2, Kp, Kd,
-			omega_min, omega_max, delta_lim_deg, gamma, band_mid, lpf_c);
-		_meso_pitch = std::make_unique<MESO4Controller>(adaptive, k_phi1, k_phi2, Kp, Kd,
-			omega_min, omega_max, delta_lim_deg, gamma, band_mid, lpf_c);
+		_meso_roll = new MESO4Controller(adaptive, k_phi1, k_phi2, Kp, Kd,
+		omega_min, omega_max, delta_lim_deg, gamma, band_mid, lpf_c);
+		_meso_pitch = new MESO4Controller(adaptive, k_phi1, k_phi2, Kp, Kd,
+		omega_min, omega_max, delta_lim_deg, gamma, band_mid, lpf_c);
 		break;
 	default:
 		PX4_ERR("Unknown MESO type %d", type);
-		_meso_roll.reset();
-		_meso_pitch.reset();
 		return;
 	}
 
@@ -255,7 +264,7 @@ void HydroRateControl::Run()
 			}
 
 			// 时间步长（可使用参数覆盖）
-			const float tau_override = _param_hy_cadrc_tau.get(); // 保留原CADRC的tau参数
+			const float tau_override = _param_hy_meso_tau.get(); // 保留原CADRC的tau参数
 			const float dt_used = (tau_override > 0.f) ? tau_override : dt;
 
 			// 根据模式选择控制方法
