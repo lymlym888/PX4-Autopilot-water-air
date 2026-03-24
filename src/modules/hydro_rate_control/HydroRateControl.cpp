@@ -287,19 +287,19 @@ void HydroRateControl::Run()
 		// }
 
 		//---------------------------------小改动，为了无遥控测试用---------------------------------------
-		// // //读手动操控信息
-		// _manual_control_setpoint_sub.copy(&_manual_control_setpoint);
+		//读手动操控信息
+		_manual_control_setpoint_sub.copy(&_manual_control_setpoint);
 		// 读手动操控信息：如果没检测到(未发布/无效)，就用0
-		manual_control_setpoint_s manual_sp{};
-		const bool got_manual = _manual_control_setpoint_sub.update(&manual_sp);
+		// manual_control_setpoint_s manual_sp{};
+		// const bool got_manual = _manual_control_setpoint_sub.update(&manual_sp);
 
-		if (got_manual && manual_sp.valid && manual_sp.timestamp != 0) {
-			_manual_control_setpoint = manual_sp;
-		} else {
-			// 没RC/无效 -> 全部置0，避免用到脏数据
-			_manual_control_setpoint = {};
-			_manual_control_setpoint.valid = false;
-		}
+		// if (got_manual && manual_sp.valid && manual_sp.timestamp != 0) {
+		// 	_manual_control_setpoint = manual_sp;
+		// } else {
+		// 	// 没RC/无效 -> 全部置0，避免用到脏数据
+		// 	_manual_control_setpoint = {};
+		// 	_manual_control_setpoint.valid = false;
+		// }
 		//----------------------------------结束--------------------------------------------------------
 
 		// ACRO 模式
@@ -492,13 +492,133 @@ void HydroRateControl::Run()
 			_rate_control.resetIntegral();
 		}
 
-		// 深度控制及最终输出（与原来相同，不变）
-		if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB ||
-		    _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO ||
-		    _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_MANUAL) {
-			// 深度控制代码（略，与原始文件相同）
-			// ... 此处省略深度控制部分 ...
-		} else {
+
+		//执行补偿操作和滑行深度控制
+		if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_MANUAL)
+		{
+			// Add feed-forward from roll control output to yaw control output
+			// This can be used to counteract the adverse yaw effect when rolling the plane
+			// _hydro_torque_setpoint.xyz[2] = math::constrain(_hydro_torque_setpoint.xyz[2] + _param_hy_rll_to_yaw_ff.get() *
+			// _hydro_torque_setpoint.xyz[0], -1.f, 1.f);
+
+			//推力前馈到pit轴力矩上
+			_hydro_torque_setpoint.xyz[1] = math::constrain(_hydro_torque_setpoint.xyz[1] + _param_thr_to_pit_ff.get() *
+			_thrust_sp_norm, -1.f, 1.f);
+
+			//读取消息
+			_vehicle_attitude_sub.update(&_vehicle_attitude);
+			Eulerf euler_angles(Quatf(_vehicle_attitude.q));
+			_depth_fusion_sub.update(&_depth_fusion);
+			_debug_key_value_sub.update(&_debug_key_value);
+			_vehicle_air_data_sub.update(&_vehicle_air_data);
+			_depth_estimated_sub.update(&_depth_estimated);
+			_debug_vect_sub.update(&_debug_vect);
+
+			// 深度（高度）真值和设定值获取，//! 向下为正，越深越正
+			// float depth = _depth_fusion.fudepth * 0.01f;//换算单位
+			// float depth = - _debug_key_value.value;
+			// float depth = _vehicle_air_data.baro_alt_meter * 0.01f;
+			float depth = _depth_estimated.depth_estimated;
+			float depth_rate = 0;
+			// float depth = _debug_vect.x;
+			// float depth_rate = _debug_vect.y;
+			float depth_setpoint = _param_hy_dc_sp.get();
+
+			_hydro_depth_control_message.depth = depth;
+			_hydro_depth_control_message.depth_rate = depth_rate;
+			_hydro_depth_control_message.depth_setpoint = depth_setpoint;
+
+			// 水平推力比例限幅，限制遥控器的最大命令
+			float throttle_limited;
+			throttle_limited = math::constrain(_thrust_sp_norm, -_param_hy_dc_max_thr.get(), _param_hy_dc_max_thr.get());
+			_hydro_depth_control_message.throttle_limited = throttle_limited;
+
+			//水平推力计算，向前为正，最大为水下推进器推力的2倍
+			//! 注意，水翼的推力计算都用真值，单位是N，但力矩仍用归一化值
+			float hydro_horizontal_thrust_setpoint = throttle_limited * 2 * _param_hy_rt_max_thrust.get();
+			_hydro_depth_control_message.horizontal_thrust = hydro_horizontal_thrust_setpoint;
+
+			/* 非光滑反馈 START */
+			//TODO 非光滑反馈还有一个对舵机角度进行反馈的项，但这个项目前得不到
+			// 非光滑反馈误差计算
+			float nsf_e1 = depth_setpoint - depth;
+			float nsf_e2 = - depth_rate;
+			float nsf_s = nsf_e1 + nsf_e2*_param_hy_nsf_pt.get();
+			float nsf_s_norm = nsf_s / _param_hy_nsf_norm.get();
+			float nsf_s_norm_power = std::pow(nsf_s_norm, _param_hy_nsf_power.get());
+			// 非光滑反馈控制量计算
+			float nsf_u = nsf_s_norm_power * _param_hy_nsf_kp.get();
+			// 非光滑反馈控制量限幅
+			float nsf_u_limited =\
+				math::constrain(nsf_u, _param_hy_nsf_umin.get(), _param_hy_nsf_umax.get());
+			// 记录
+			_hydro_depth_control_message.nsf_e1 = nsf_e1;
+			_hydro_depth_control_message.nsf_e2 = nsf_e2;
+			_hydro_depth_control_message.nsf_s = nsf_s;
+			_hydro_depth_control_message.nsf_s_norm = nsf_s_norm;
+			_hydro_depth_control_message.nsf_s_norm_power = nsf_s_norm_power;
+			_hydro_depth_control_message.nsf_u = nsf_u;
+			_hydro_depth_control_message.nsf_u_limited = nsf_u_limited;
+			/* 非光滑反馈 END */
+
+			/* 高阶滑模 START */
+			//控制量计算
+			float hsmc_x1 = depth - depth_setpoint;
+			float hsmc_x2 = depth_rate;
+			float hsmc_surface =\
+				_param_hy_hsmc_mass.get() * _param_hy_hsmc_alpha.get() * _param_hy_hsmc_alpha.get() * hsmc_x1 +\
+				_param_hy_hsmc_mass.get() * 2 * _param_hy_hsmc_alpha.get() * hsmc_x2 + _hsmc_x3;
+			float hsmc_u =\
+				- _param_hy_hsmc_mass.get() * _param_hy_hsmc_alpha.get() * _param_hy_hsmc_alpha.get() * hsmc_x2 -\
+				2 * _param_hy_hsmc_alpha.get() * _hsmc_x3 -\
+				_param_hy_hsmc_eta.get() * math::signNoZero(hsmc_surface);
+			//积分
+			_hsmc_x3 += hsmc_u * _param_hy_hsmc_ts.get();
+			_hsmc_x3 = math::constrain(_hsmc_x3, _param_hy_hsmc_imin.get(), _param_hy_hsmc_imax.get());
+			//记录
+			_hydro_depth_control_message.hsmc_x1 = hsmc_x1;
+			_hydro_depth_control_message.hsmc_x2 = hsmc_x2;
+			_hydro_depth_control_message.hsmc_x3 = _hsmc_x3;
+			_hydro_depth_control_message.hsmc_surface = hsmc_surface;
+			_hydro_depth_control_message.hsmc_u = hsmc_u;
+			/* 高阶滑模 END */
+
+			// 根据模式选择竖直推力，向下为正
+			float hydro_vertical_thrust_setpoint;
+			int32_t dc_mode = _param_hy_dc_mode.get();
+			if(dc_mode == 1)
+				hydro_vertical_thrust_setpoint = nsf_u_limited + _param_hy_dc_ff.get();
+			else if(dc_mode == 2)
+				hydro_vertical_thrust_setpoint = _hsmc_x3 + _param_hy_dc_ff.get();
+			else if(dc_mode == 3)
+				hydro_vertical_thrust_setpoint = _manual_control_setpoint.pitch * _param_hy_man_ratio.get() + _param_hy_dc_ff.get();
+			else if(dc_mode == 4)
+				hydro_vertical_thrust_setpoint = _param_hy_dc_ff.get();
+			else
+				hydro_vertical_thrust_setpoint = 0;
+
+
+			//滑行时，机身的俯仰角近似为自然攻角，实际攻角等于翼面偏转角度加上自然攻角
+			float alpha0 = euler_angles.theta();
+
+			//水平和竖直推力转换为机身坐标系下的推力，使用二维坐标转换
+			_hydro_thrust_setpoint.xyz[0] = hydro_horizontal_thrust_setpoint * std::cos(alpha0) - hydro_vertical_thrust_setpoint * std::sin(alpha0);
+			_hydro_thrust_setpoint.xyz[2] = hydro_horizontal_thrust_setpoint * std::sin(alpha0) + hydro_vertical_thrust_setpoint * std::cos(alpha0);
+
+			//y方向推力始终为0
+			_hydro_thrust_setpoint.xyz[1] = 0;
+
+			_hydro_depth_control_message.timestamp = hrt_absolute_time();
+			_hydro_depth_control_message_pub.publish(_hydro_depth_control_message);
+		}
+
+		//发布hydro的setpoint；其他情况下，也要发布0
+		if(_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_MANUAL)
+		{
+			;
+		}
+		else
+		{
 			_hydro_thrust_setpoint.xyz[0] = 0;
 			_hydro_thrust_setpoint.xyz[1] = 0;
 			_hydro_thrust_setpoint.xyz[2] = 0;
