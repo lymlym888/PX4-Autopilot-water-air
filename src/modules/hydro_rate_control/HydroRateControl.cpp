@@ -272,8 +272,8 @@ void HydroRateControl::Run()
 			    _param_hy_meso_en.get() && _meso_roll && _meso_pitch) {
 
 				// MESO控制
-				_meso_roll->update(roll, roll_sp, dt_used, p);
-				_meso_pitch->update(pitch, pitch_sp, dt_used, q);
+				_meso_roll->update(roll, roll_sp, p, dt_used);
+				_meso_pitch->update(pitch, pitch_sp, q, dt_used);
 
 				// 控制输出：舵偏角 -> 归一化扭矩（使用缩放因子）
 				const float u_scale = _param_hy_meso_u_scale.get();
