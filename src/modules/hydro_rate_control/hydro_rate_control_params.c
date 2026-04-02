@@ -42,84 +42,147 @@
 
 
 /**
- * Enable CADRC in STAB mode
+ * Enable MFESO in STAB mode
  *
  * @boolean
- * @group HY CADRC
+ * @group HY MFESO
  */
-PARAM_DEFINE_INT32(HY_CADRC_EN, 1);
+PARAM_DEFINE_INT32(HY_MF_EN, 1);
 
 /**
- * CADRC J0 (inertia-like parameter)
+ * MFESO Control Mode
+ *
+ * 0: PROPOSED (MF + Dual-ESO)
+ * 1: FF_SINGLE
+ * 2: DUAL_NO_FF
+ * 3: DUAL_FIXED
+ * 4: SINGLE_ESO
+ * 5: PID
+ *
+ * @value 0 PROPOSED
+ * @value 1 FF_SINGLE
+ * @value 2 DUAL_NO_FF
+ * @value 3 DUAL_FIXED
+ * @value 4 SINGLE_ESO
+ * @value 5 PID
+ * @group HY MFESO
+ */
+PARAM_DEFINE_INT32(HY_MF_MODE, 0);
+
+/**
+ * MFESO Sea State Override
+ *
+ * 0: CALM, 1: ROUGH, 2: SAFE
+ *
+ * @value 0 CALM
+ * @value 1 ROUGH
+ * @value 2 SAFE
+ * @group HY MFESO
+ */
+PARAM_DEFINE_INT32(HY_MF_SEA_ST, 0);
+
+/**
+ * MFESO Roll Axis Bias (a0)
+ *
+ * @group HY MFESO
+ */
+PARAM_DEFINE_FLOAT(HY_MF_R_A0, 0.22f);
+
+/**
+ * MFESO Roll Axis Control Gain (b0)
  *
  * @min 0.001
- * @group HY CADRC
+ * @group HY MFESO
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_J0, 10.1746f);
+PARAM_DEFINE_FLOAT(HY_MF_R_B0, 10.1746f);
 
 /**
- * CADRC kp1 (position loop gain)
+ * MFESO Pitch Axis Bias (a0)
+ *
+ * @group HY MFESO
+ */
+PARAM_DEFINE_FLOAT(HY_MF_P_A0, -0.18f);
+
+/**
+ * MFESO Pitch Axis Control Gain (b0)
+ *
+ * @min 0.001
+ * @group HY MFESO
+ */
+PARAM_DEFINE_FLOAT(HY_MF_P_B0, 8.65f);
+
+/**
+ * MFESO Calm Sea State Controller Bandwidth (wc)
  *
  * @min 0.0
- * @group HY CADRC
+ * @group HY MFESO
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_KP1, 500.0f);
+PARAM_DEFINE_FLOAT(HY_MF_C_WC, 4.8f);
 
 /**
- * CADRC kp2 (rate loop gain)
+ * MFESO Calm Sea State Damping Ratio (zeta)
  *
  * @min 0.0
- * @group HY CADRC
+ * @group HY MFESO
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_KP2, 1000.0f);
+PARAM_DEFINE_FLOAT(HY_MF_C_ZT, 0.95f);
 
 /**
- * CADRC omega_o1 (ESO bandwidth for position loop)
+ * MFESO Rough Sea State Controller Bandwidth (wc)
  *
  * @min 0.0
- * @group HY CADRC
+ * @group HY MFESO
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_O1, 15.0f);
+PARAM_DEFINE_FLOAT(HY_MF_R_WC, 4.4f);
 
 /**
- * CADRC omega_o2 (ESO bandwidth for rate loop)
+ * MFESO Rough Sea State Damping Ratio (zeta)
  *
  * @min 0.0
- * @group HY CADRC
+ * @group HY MFESO
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_O2, 15.0f);
+PARAM_DEFINE_FLOAT(HY_MF_R_ZT, 1.55f);
 
 /**
- * CADRC alpha (adaptive gain). 0 disables adaptation
+ * MFESO Safe Sea State Controller Bandwidth (wc)
  *
  * @min 0.0
- * @group HY CADRC
+ * @group HY MFESO
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_ALP, 0.0f);
+PARAM_DEFINE_FLOAT(HY_MF_S_WC, 2.8f);
 
 /**
- * CADRC tau override (s). 0 = use dt from gyro/scheduler
+ * MFESO Safe Sea State Damping Ratio (zeta)
+ *
+ * @min 0.0
+ * @group HY MFESO
+ */
+PARAM_DEFINE_FLOAT(HY_MF_S_ZT, 1.25f);
+
+/**
+ * MFESO tau override (s). 0 = use dt from gyro/scheduler
  *
  * @min 0.0
  * @max 0.02
- * @group HY CADRC
+ * @group HY MFESO
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_TAU, 0.0025f);
+PARAM_DEFINE_FLOAT(HY_MF_TAU, 0.0025f);
 
 /**
- * Scale CADRC Uc to normalized torque [-1, 1]
+ * Scale MFESO Uc to normalized torque [-1, 1]
+ * * NOTE: Adjust this to map the physical output to PWM actuator limits
  *
  * @min 0.000001
- * @group HY CADRC
+ * @group HY MFESO
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_U_SCALE, 0.001f);
+PARAM_DEFINE_FLOAT(HY_MF_U_SCL, 1.0f);
 
 /**
  * STAB max roll angle from RC (deg)
  *
  * @min 0.0
  * @max 80.0
- * @group HY CADRC
+ * @group HY MFESO
  */
 PARAM_DEFINE_FLOAT(HY_ROLL_MAX, 30.0f);
 
@@ -128,7 +191,7 @@ PARAM_DEFINE_FLOAT(HY_ROLL_MAX, 30.0f);
  *
  * @min 0.0
  * @max 80.0
- * @group HY CADRC
+ * @group HY MFESO
  */
 PARAM_DEFINE_FLOAT(HY_PITCH_MAX, 20.0f);
 

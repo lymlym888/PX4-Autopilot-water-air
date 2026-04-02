@@ -1,20 +1,20 @@
 /****************************************************************************
  *
- *   Copyright (c) 2013-2023 PX4 Development Team. All rights reserved.
+ * Copyright (c) 2013-2023 PX4 Development Team. All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions
  * are met:
  *
  * 1. Redistributions of source code must retain the above copyright
- *    notice, this list of conditions and the following disclaimer.
+ * notice, this list of conditions and the following disclaimer.
  * 2. Redistributions in binary form must reproduce the above copyright
- *    notice, this list of conditions and the following disclaimer in
- *    the documentation and/or other materials provided with the
- *    distribution.
+ * notice, this list of conditions and the following disclaimer in
+ * the documentation and/or other materials provided with the
+ * distribution.
  * 3. Neither the name PX4 nor the names of its contributors may be
- *    used to endorse or promote products derived from this software
- *    without specific prior written permission.
+ * used to endorse or promote products derived from this software
+ * without specific prior written permission.
  *
  * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
  * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
@@ -43,549 +43,540 @@ using math::interpolate;
 using math::radians;
 
 HydroRateControl::HydroRateControl() :
-	ModuleParams(nullptr),
-	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::nav_and_controllers),
-	_loop_perf(perf_alloc(PC_ELAPSED, MODULE_NAME": cycle"))
+        ModuleParams(nullptr),
+        ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::nav_and_controllers),
+        _loop_perf(perf_alloc(PC_ELAPSED, MODULE_NAME": cycle"))
 {
-	/* fetch initial parameter values */
-	parameters_update();
+        /* fetch initial parameter values */
+        parameters_update();
 }
 
 HydroRateControl::~HydroRateControl()
 {
-	perf_free(_loop_perf);
+        perf_free(_loop_perf);
 }
 
 bool
 HydroRateControl::init()
 {
-	if (!_vehicle_angular_velocity_sub.registerCallback()) {
-		PX4_ERR("callback registration failed");
-		return false;
-	}
+        if (!_vehicle_angular_velocity_sub.registerCallback()) {
+                PX4_ERR("callback registration failed");
+                return false;
+        }
 
-	return true;
+        return true;
 }
 
 int
 HydroRateControl::parameters_update()
 {
-	const Vector3f rate_p = Vector3f(_param_hy_rr_p.get(), _param_hy_pr_p.get(), _param_hy_yr_p.get());
-	const Vector3f rate_i = Vector3f(_param_hy_rr_i.get(), _param_hy_pr_i.get(), _param_hy_yr_i.get());
-	const Vector3f rate_d = Vector3f(_param_hy_rr_d.get(), _param_hy_pr_d.get(), _param_hy_yr_d.get());
+        const Vector3f rate_p = Vector3f(_param_hy_rr_p.get(), _param_hy_pr_p.get(), _param_hy_yr_p.get());
+        const Vector3f rate_i = Vector3f(_param_hy_rr_i.get(), _param_hy_pr_i.get(), _param_hy_yr_i.get());
+        const Vector3f rate_d = Vector3f(_param_hy_rr_d.get(), _param_hy_pr_d.get(), _param_hy_yr_d.get());
 
-	_rate_control.setPidGains(rate_p, rate_i, rate_d);
+        _rate_control.setPidGains(rate_p, rate_i, rate_d);
 
-	_rate_control.setIntegratorLimit(
-		Vector3f(_param_hy_rr_imax.get(), _param_hy_pr_imax.get(), _param_hy_yr_imax.get()));
+        _rate_control.setIntegratorLimit(
+                Vector3f(_param_hy_rr_imax.get(), _param_hy_pr_imax.get(), _param_hy_yr_imax.get()));
 
-	_rate_control.setFeedForwardGain(
-		// set FF gains to 0 as we add the FF control outside of the rate controller
-		Vector3f(0.f, 0.f, 0.f));
+        _rate_control.setFeedForwardGain(
+                // set FF gains to 0 as we add the FF control outside of the rate controller
+                Vector3f(0.f, 0.f, 0.f));
 
-	//CADRC部分
-	const float J0    = _param_hy_cadrc_j0.get();
-	const float kp1   = _param_hy_cadrc_kp1.get();
-	const float kp2   = _param_hy_cadrc_kp2.get();
-	const float o1    = _param_hy_cadrc_o1.get();
-	const float o2    = _param_hy_cadrc_o2.get();
-	const float alpha = _param_hy_cadrc_alp.get();
+        // MFESO 参数更新
+        _mfeso_roll.setModelParams(_param_hy_mf_r_a0.get(), _param_hy_mf_r_b0.get());
+        _mfeso_pitch.setModelParams(_param_hy_mf_p_a0.get(), _param_hy_mf_p_b0.get());
 
-	_cadrc_roll.setJ0(J0);
-	_cadrc_pitch.setJ0(J0);
+        _mfeso_roll.setBandwidths(_param_hy_mf_c_wc.get(), _param_hy_mf_c_zeta.get(),
+                                  _param_hy_mf_r_wc.get(), _param_hy_mf_r_zeta.get(),
+                                  _param_hy_mf_s_wc.get(), _param_hy_mf_s_zeta.get());
 
-	_cadrc_roll.setGains(kp1, o1, kp2, o2);
-	_cadrc_pitch.setGains(kp1, o1, kp2, o2);
+        _mfeso_pitch.setBandwidths(_param_hy_mf_c_wc.get(), _param_hy_mf_c_zeta.get(),
+                                   _param_hy_mf_r_wc.get(), _param_hy_mf_r_zeta.get(),
+                                   _param_hy_mf_s_wc.get(), _param_hy_mf_s_zeta.get());
 
-	_cadrc_roll.setAlpha(alpha);
-	_cadrc_pitch.setAlpha(alpha);
-
-
-	return PX4_OK;
+        return PX4_OK;
 }
-
-
-
 
 float HydroRateControl::get_airspeed_and_update_scaling()
 {
-	// if no airspeed measurement is available out best guess is to use the trim airspeed
-	float airspeed = _param_hy_airspd_trim.get();
+        // if no airspeed measurement is available out best guess is to use the trim airspeed
+        float airspeed = _param_hy_airspd_trim.get();
 
-	const float airspeed_constrained = constrain(constrain(airspeed, _param_hy_airspd_stall.get(),
-					   _param_hy_airspd_max.get()), 0.1f, 1000.0f);
+        const float airspeed_constrained = constrain(constrain(airspeed, _param_hy_airspd_stall.get(),
+                                           _param_hy_airspd_max.get()), 0.1f, 1000.0f);
 
-	_airspeed_scaling = (_param_hy_arsp_scale_en.get()) ? (_param_hy_airspd_trim.get() / airspeed_constrained) : 1.0f;
+        _airspeed_scaling = (_param_hy_arsp_scale_en.get()) ? (_param_hy_airspd_trim.get() / airspeed_constrained) : 1.0f;
 
-	return airspeed_constrained;
+        return airspeed_constrained;
 }
 
 void HydroRateControl::Run()
 {
-	if (should_exit()) {
-		_vehicle_angular_velocity_sub.unregisterCallback();
-		exit_and_cleanup();
-		return;
-	}
+        if (should_exit()) {
+                _vehicle_angular_velocity_sub.unregisterCallback();
+                exit_and_cleanup();
+                return;
+        }
 
-	perf_begin(_loop_perf);
+        perf_begin(_loop_perf);
 
-	// only run controller if angular velocity changed
-	if (_vehicle_angular_velocity_sub.updated() || (hrt_elapsed_time(&_last_run) > 20_ms)) {
+        // only run controller if angular velocity changed
+        if (_vehicle_angular_velocity_sub.updated() || (hrt_elapsed_time(&_last_run) > 20_ms)) {
 
-		// only update parameters if they changed
-		bool params_updated = _parameter_update_sub.updated();
+                // only update parameters if they changed
+                bool params_updated = _parameter_update_sub.updated();
 
-		// check for parameter updates
-		if (params_updated) {
-			// clear update
-			parameter_update_s pupdate;
-			_parameter_update_sub.copy(&pupdate);
+                // check for parameter updates
+                if (params_updated) {
+                        // clear update
+                        parameter_update_s pupdate;
+                        _parameter_update_sub.copy(&pupdate);
 
-			// update parameters from storage
-			updateParams();
-			parameters_update();
-		}
+                        // update parameters from storage
+                        updateParams();
+                        parameters_update();
+                }
 
-		float dt = 0.f;
+                float dt = 0.f;
 
-		static constexpr float DT_MIN = 0.002f;
-		static constexpr float DT_MAX = 0.04f;
+                static constexpr float DT_MIN = 0.002f;
+                static constexpr float DT_MAX = 0.04f;
 
-		vehicle_angular_velocity_s vehicle_angular_velocity{};
+                vehicle_angular_velocity_s vehicle_angular_velocity{};
 
-		if (_vehicle_angular_velocity_sub.copy(&vehicle_angular_velocity)) {
-			dt = math::constrain((vehicle_angular_velocity.timestamp_sample - _last_run) * 1e-6f, DT_MIN, DT_MAX);
-			_last_run = vehicle_angular_velocity.timestamp_sample;
-		}
+                if (_vehicle_angular_velocity_sub.copy(&vehicle_angular_velocity)) {
+                        dt = math::constrain((vehicle_angular_velocity.timestamp_sample - _last_run) * 1e-6f, DT_MIN, DT_MAX);
+                        _last_run = vehicle_angular_velocity.timestamp_sample;
+                }
 
-		if (dt < DT_MIN || dt > DT_MAX) {
-			const hrt_abstime time_now_us = hrt_absolute_time();
-			dt = math::constrain((time_now_us - _last_run) * 1e-6f, DT_MIN, DT_MAX);
-			_last_run = time_now_us;
-		}
+                if (dt < DT_MIN || dt > DT_MAX) {
+                        const hrt_abstime time_now_us = hrt_absolute_time();
+                        dt = math::constrain((time_now_us - _last_run) * 1e-6f, DT_MIN, DT_MAX);
+                        _last_run = time_now_us;
+                }
 
-		Vector3f rates(vehicle_angular_velocity.xyz);
-		Vector3f angular_accel{vehicle_angular_velocity.xyz_derivative};
+                Vector3f rates(vehicle_angular_velocity.xyz);
+                Vector3f angular_accel{vehicle_angular_velocity.xyz_derivative};
 
-		_vehicle_status_sub.update(&_vehicle_status);
+                _vehicle_status_sub.update(&_vehicle_status);
 
 // --------------------是否切换模式进入stab，是则reset--------------------------------------------------------------
-		// detect transition into STAB (edge)
-		const bool entered_stab =
-		(_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB) &&
-		(_prev_nav_state != vehicle_status_s::NAVIGATION_STATE_STAB);
+                // detect transition into STAB (edge)
+                const bool entered_stab =
+                (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB) &&
+                (_prev_nav_state != vehicle_status_s::NAVIGATION_STATE_STAB);
 
-		if (entered_stab) {
-		// reset CADRC (and optionally other integrators)
-		_cadrc_roll.reset();
-		_cadrc_pitch.reset();
-		}
-		// update previous nav state
-		_prev_nav_state = _vehicle_status.nav_state;
+                if (entered_stab) {
+                        // reset MFESO (and optionally other integrators)
+                        _mfeso_roll.reset();
+                        _mfeso_pitch.reset();
+
+                        // 重置物理前馈项
+                        _u_prev_roll = 0.f;
+                        _u_prev_pitch = 0.f;
+                }
+                // update previous nav state
+                _prev_nav_state = _vehicle_status.nav_state;
 
 //---------------------------------小改动，为了无遥控测试用---------------------------------------
-		// //读手动操控信息
-		// _manual_control_setpoint_sub.copy(&_manual_control_setpoint);
-		// 读手动操控信息：如果没检测到(未发布/无效)，就用0
-		manual_control_setpoint_s manual_sp{};
-		const bool got_manual = _manual_control_setpoint_sub.update(&manual_sp);
+                //读手动操控信息
+		_manual_control_setpoint_sub.copy(&_manual_control_setpoint);
 
-		if (got_manual && manual_sp.valid && manual_sp.timestamp != 0) {
-			_manual_control_setpoint = manual_sp;
-		} else {
-			// 没RC/无效 -> 全部置0，避免用到脏数据
-			_manual_control_setpoint = {};
-			_manual_control_setpoint.valid = false;
-		}
+		// // 读手动操控信息：如果没检测到(未发布/无效)，就用0
+                // manual_control_setpoint_s manual_sp{};
+                // const bool got_manual = _manual_control_setpoint_sub.update(&manual_sp);
+
+                // if (got_manual && manual_sp.valid && manual_sp.timestamp != 0) {
+                //         _manual_control_setpoint = manual_sp;
+                // } else {
+                //         // 没RC/无效 -> 全部置0，避免用到脏数据
+                //         _manual_control_setpoint = {};
+                //         _manual_control_setpoint.valid = false;
+                // }
 //----------------------------------结束--------------------------------------------------------
 
-		//特技模式下，操控量映射到rate_sp
-		if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO)
-		{
-			_rates_sp.roll = _manual_control_setpoint.roll * radians(_param_hy_acro_x_max.get());
-			_rates_sp.yaw = _manual_control_setpoint.yaw * radians(_param_hy_acro_z_max.get());
-			_rates_sp.pitch = -_manual_control_setpoint.pitch * radians(_param_hy_acro_y_max.get());
-			_rates_sp.timestamp = hrt_absolute_time();
-			_rates_sp.thrust_body[0] = (_manual_control_setpoint.throttle + 1.f) * .5f;
+                //特技模式下，操控量映射到rate_sp
+                if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO)
+                {
+                        _rates_sp.roll = _manual_control_setpoint.roll * radians(_param_hy_acro_x_max.get());
+                        _rates_sp.yaw = _manual_control_setpoint.yaw * radians(_param_hy_acro_z_max.get());
+                        _rates_sp.pitch = -_manual_control_setpoint.pitch * radians(_param_hy_acro_y_max.get());
+                        _rates_sp.timestamp = hrt_absolute_time();
+                        _rates_sp.thrust_body[0] = (_manual_control_setpoint.throttle + 1.f) * .5f;
 
-			_rate_sp_pub.publish(_rates_sp);
+                        _rate_sp_pub.publish(_rates_sp);
 
-		}
-		//手动模式下，操控量映射到torque和thrust
-		else if(_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_MANUAL)
-		{
-			_hydro_torque_setpoint.xyz[0] = math::constrain(_manual_control_setpoint.roll * _param_hy_man_r_sc.get() +
-							_param_trim_roll.get(), -1.f, 1.f);
-			_hydro_torque_setpoint.xyz[1] = math::constrain(-_manual_control_setpoint.pitch * _param_hy_man_p_sc.get() +
-							_param_trim_pitch.get(), -1.f, 1.f);
-			_hydro_torque_setpoint.xyz[2] = math::constrain(_manual_control_setpoint.yaw * _param_hy_man_y_sc.get() +
-							_param_trim_yaw.get(), -1.f, 1.f);
+                }
+                //手动模式下，操控量映射到torque和thrust
+                else if(_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_MANUAL)
+                {
+                        _hydro_torque_setpoint.xyz[0] = math::constrain(_manual_control_setpoint.roll * _param_hy_man_r_sc.get() +
+                                                        _param_trim_roll.get(), -1.f, 1.f);
+                        _hydro_torque_setpoint.xyz[1] = math::constrain(-_manual_control_setpoint.pitch * _param_hy_man_p_sc.get() +
+                                                        _param_trim_pitch.get(), -1.f, 1.f);
+                        _hydro_torque_setpoint.xyz[2] = math::constrain(_manual_control_setpoint.yaw * _param_hy_man_y_sc.get() +
+                                                        _param_trim_yaw.get(), -1.f, 1.f);
 
-			_thrust_sp_norm = math::constrain((_manual_control_setpoint.throttle + 1.f) * .5f, 0.f, 1.f);
-		}
+                        _thrust_sp_norm = math::constrain((_manual_control_setpoint.throttle + 1.f) * .5f, 0.f, 1.f);
+                }
 
-		//在非手动模式下，执行控制算法
-		if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO) {
+                //在非手动模式下，执行控制算法
+                if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO) {
 
-			//CADRC算法增加部分-------------开始
-			// 读取姿态角（实时角度 P）
-			_vehicle_attitude_sub.update(&_vehicle_attitude);
-			Eulerf euler_angles(Quatf(_vehicle_attitude.q));
+                        // ==================== MFESO 算法增加部分 ====================
+                        // 读取姿态角（实时角度 P）
+                        _vehicle_attitude_sub.update(&_vehicle_attitude);
+                        Eulerf euler_angles(Quatf(_vehicle_attitude.q));
 
-			const float roll  = euler_angles.phi();    // rad
-			const float pitch = euler_angles.theta();  // rad
+                        const float roll  = euler_angles.phi();    // rad
+                        const float pitch = euler_angles.theta();  // rad
 
-			// 实时角速度 Wx
-			const float p = rates(0); // roll rate rad/s
-			const float q = rates(1); // pitch rate rad/s
+                        // 实时角速度 Wx
+                        const float p = rates(0); // roll rate rad/s
+                        const float q = rates(1); // pitch rate rad/s
 
-			// STAB 模式：由遥控器映射目标角度 P_sp；没RC则用0
-			float roll_sp = 0.f;
-			float pitch_sp = 0.f;
-			if (_manual_control_setpoint.valid && _manual_control_setpoint.timestamp != 0) {
-				roll_sp  = _manual_control_setpoint.roll  * radians(_param_hy_roll_max.get());
-				pitch_sp = -_manual_control_setpoint.pitch * radians(_param_hy_pitch_max.get());
-			}
+                        // STAB 模式：由遥控器映射目标角度 P_sp；没RC则用0
+                        float roll_sp = 0.f;
+                        float pitch_sp = 0.f;
+                        if (_manual_control_setpoint.valid && _manual_control_setpoint.timestamp != 0) {
+                                roll_sp  = _manual_control_setpoint.roll  * radians(_param_hy_roll_max.get());
+                                pitch_sp = -_manual_control_setpoint.pitch * radians(_param_hy_pitch_max.get());
+                        }
 
-			// tau：支持地面站覆盖（0=用真实dt）
-			const float tau_override = _param_hy_cadrc_tau.get();
-			const float dt_used = (tau_override > 0.f) ? tau_override : dt;
+                        // tau：支持地面站覆盖（0=用真实dt）
+                        const float tau_override = _param_hy_mf_tau.get();
+                        const float dt_used = (tau_override > 0.f) ? tau_override : dt;
 
-			if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB
-			&& _param_hy_cadrc_en.get()) {
+                        if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB && _param_hy_mf_en.get()) {
 
-				// CADRC：P_sp, P, Wx -> Wx_p -> Uc
-				_cadrc_roll.update(roll, roll_sp, p, dt_used);
-				_cadrc_pitch.update(pitch, pitch_sp, q, dt_used);
+                                auto mode = static_cast<MFESO_ControlMode>(_param_hy_mf_mode.get());
+                                auto sea_state = static_cast<MFESO_SeaState>(_param_hy_mf_sea_st.get());
 
-				// 记录
-				_hydro_cadrc_control_message.roll_sp = roll_sp;
-				_hydro_cadrc_control_message.pitch_sp = pitch_sp;
-				_hydro_cadrc_control_message.roll_z11 = _cadrc_roll._Z1(0,0);
-				_hydro_cadrc_control_message.roll_z12 = _cadrc_roll._Z1(1,0);
-				_hydro_cadrc_control_message.pitch_z11 = _cadrc_pitch._Z1(0,0);
-				_hydro_cadrc_control_message.pitch_z12 = _cadrc_pitch._Z1(1,0);
+                                // MFESO 迭代：获取最新舵面指令
+                                _mfeso_roll.update(roll, roll_sp, p, dt_used, sea_state, _u_prev_roll, mode);
+                                _mfeso_pitch.update(pitch, pitch_sp, q, dt_used, sea_state, _u_prev_pitch, mode);
 
-				// 把 Wx_p 发出来做日志（方便在QGC plot看“期望角速度”）
-				// _rates_sp.roll = _cadrc_roll.getRateSp();
-				// _rates_sp.pitch = _cadrc_pitch.getRateSp();
-				// _rates_sp.yaw = 0.f;
-				// _rates_sp.timestamp = hrt_absolute_time();
-				// _rate_sp_pub.publish(_rates_sp);
+                                // 获取算法输出并进行基础物理映射缩放
+                                const float u_scale = _param_hy_mf_u_scale.get();
+                                float u_roll  = math::constrain(_mfeso_roll.getUc()  * u_scale, -1.f, 1.f);
+                                float u_pitch = math::constrain(_mfeso_pitch.getUc() * u_scale, -1.f, 1.f);
 
-				// Uc -> 归一化 torque（交给 control allocation）
-				const float u_scale = _param_hy_cadrc_u_scale.get();
-				float u_roll  = math::constrain(_cadrc_roll.getUc()  * u_scale, -1.f, 1.f);
-				float u_pitch = math::constrain(_cadrc_pitch.getUc() * u_scale, -1.f, 1.f);
+                                // 保存未带Trim的输出作为物理前馈 (u_prev_applied) 给下一帧的ESO观测
+                                _u_prev_roll = u_roll;
+                                _u_prev_pitch = u_pitch;
 
-				// 记录
-				_hydro_cadrc_control_message.u_roll = _cadrc_roll.getUc()  * u_scale;
-				_hydro_cadrc_control_message.u_pitch = _cadrc_pitch.getUc() * u_scale;
+                                // --- 日志记录 (借用原 hydro_cadrc 消息结构，便于你在 QGC 查看曲线) ---
+                                _hydro_cadrc_control_message.roll_sp = roll_sp;
+                                _hydro_cadrc_control_message.pitch_sp = pitch_sp;
 
-				// yaw：先保持最简单的手动映射（后面再决定是否也用CADRC）
-				float u_yaw = math::constrain(_manual_control_setpoint.yaw * _param_hy_man_y_sc.get()
-								+ _param_trim_yaw.get(), -1.f, 1.f);
+                                // 映射到旧变量以便在不需要改动 .msg 的前提下兼容绘制双ESO状态
+                                _hydro_cadrc_control_message.roll_z11 = _mfeso_roll._Zs(0,0);  // 慢速ESO 角度估计
+                                _hydro_cadrc_control_message.roll_z12 = _mfeso_roll._Zs(1,0);  // 慢速ESO 速度估计
+                                _hydro_cadrc_control_message.roll_z21 = _mfeso_roll._Zs(2,0);  // 慢速ESO 扰动估计 dhat_s
+                                _hydro_cadrc_control_message.roll_z22 = _mfeso_roll._Zf(2,0);  // 快速ESO 扰动估计 dhat_f
 
-				// 加 trim（保持与原框架一致）
-				u_roll  = math::constrain(u_roll  + _param_trim_roll.get(),  -1.f, 1.f);
-				u_pitch = math::constrain(u_pitch + _param_trim_pitch.get(), -1.f, 1.f);
-				_hydro_cadrc_control_message.roll_z21 = _cadrc_roll._Z2(0,0);
-				_hydro_cadrc_control_message.roll_z22 = _cadrc_roll._Z2(1,0);
-				_hydro_cadrc_control_message.pitch_z21 = _cadrc_pitch._Z2(0,0);
-				_hydro_cadrc_control_message.pitch_z22 = _cadrc_pitch._Z2(1,0);
+                                _hydro_cadrc_control_message.pitch_z11 = _mfeso_pitch._Zs(0,0);
+                                _hydro_cadrc_control_message.pitch_z12 = _mfeso_pitch._Zs(1,0);
+                                _hydro_cadrc_control_message.pitch_z21 = _mfeso_pitch._Zs(2,0);
+                                _hydro_cadrc_control_message.pitch_z22 = _mfeso_pitch._Zf(2,0);
 
-				_hydro_torque_setpoint.xyz[0] = u_roll;
-				_hydro_torque_setpoint.xyz[1] = u_pitch;
-				_hydro_torque_setpoint.xyz[2] = u_yaw;
+                                _hydro_cadrc_control_message.u_roll = u_roll;
+                                _hydro_cadrc_control_message.u_pitch = u_pitch;
 
-				// 推力：STAB 下也由遥控器给一个基准
-				_thrust_sp_norm = math::constrain((_manual_control_setpoint.throttle + 1.f) * 0.5f, 0.f, 1.f);
+                                // yaw：先保持最简单的手动映射
+                                float u_yaw = math::constrain(_manual_control_setpoint.yaw * _param_hy_man_y_sc.get()
+                                                                + _param_trim_yaw.get(), -1.f, 1.f);
 
-				// 发布!!!!!!
-				_hydro_cadrc_control_message_pub.publish(_hydro_cadrc_control_message);
+                                // 加 trim (姿态平飞配平)
+                                u_roll  = math::constrain(u_roll  + _param_trim_roll.get(),  -1.f, 1.f);
+                                u_pitch = math::constrain(u_pitch + _param_trim_pitch.get(), -1.f, 1.f);
 
-			} else {
+                                _hydro_torque_setpoint.xyz[0] = u_roll;
+                                _hydro_torque_setpoint.xyz[1] = u_pitch;
+                                _hydro_torque_setpoint.xyz[2] = u_yaw;
 
-			//CADRC算法增加部分----------结束
+                                // 推力：STAB 下由遥控器给一个基准
+                                _thrust_sp_norm = math::constrain((_manual_control_setpoint.throttle + 1.f) * 0.5f, 0.f, 1.f);
 
-				const float airspeed = get_airspeed_and_update_scaling();
+                                // 发布日志消息
+                                _hydro_cadrc_control_message_pub.publish(_hydro_cadrc_control_message);
 
-				/* reset integrals where needed */
-				if (_rates_sp.reset_integral) {
-					_rate_control.resetIntegral();
-				}
+                        } else {
+                        // ==================== MFESO 算法增加部分 结束 ====================
 
-				/* bi-linear interpolation over airspeed for actuator trim scheduling */
-				Vector3f trim(_param_trim_roll.get(), _param_trim_pitch.get(), _param_trim_yaw.get());
+                                const float airspeed = get_airspeed_and_update_scaling();
 
-				if (airspeed < _param_hy_airspd_trim.get()) {
-					trim(0) += interpolate(airspeed, _param_hy_airspd_min.get(), _param_hy_airspd_trim.get(),
-							_param_hy_dtrim_r_vmin.get(),
-							0.0f);
-					trim(1) += interpolate(airspeed, _param_hy_airspd_min.get(), _param_hy_airspd_trim.get(),
-							_param_hy_dtrim_p_vmin.get(),
-							0.0f);
-					trim(2) += interpolate(airspeed, _param_hy_airspd_min.get(), _param_hy_airspd_trim.get(),
-							_param_hy_dtrim_y_vmin.get(),
-							0.0f);
+                                /* reset integrals where needed */
+                                if (_rates_sp.reset_integral) {
+                                        _rate_control.resetIntegral();
+                                }
 
-				} else {
-					trim(0) += interpolate(airspeed, _param_hy_airspd_trim.get(), _param_hy_airspd_max.get(), 0.0f,
-							_param_hy_dtrim_r_vmax.get());
-					trim(1) += interpolate(airspeed, _param_hy_airspd_trim.get(), _param_hy_airspd_max.get(), 0.0f,
-							_param_hy_dtrim_p_vmax.get());
-					trim(2) += interpolate(airspeed, _param_hy_airspd_trim.get(), _param_hy_airspd_max.get(), 0.0f,
-							_param_hy_dtrim_y_vmax.get());
-				}
+                                /* bi-linear interpolation over airspeed for actuator trim scheduling */
+                                Vector3f trim(_param_trim_roll.get(), _param_trim_pitch.get(), _param_trim_yaw.get());
 
-				_rates_sp_sub.update(&_rates_sp);
+                                if (airspeed < _param_hy_airspd_trim.get()) {
+                                        trim(0) += interpolate(airspeed, _param_hy_airspd_min.get(), _param_hy_airspd_trim.get(),
+                                                        _param_hy_dtrim_r_vmin.get(),
+                                                        0.0f);
+                                        trim(1) += interpolate(airspeed, _param_hy_airspd_min.get(), _param_hy_airspd_trim.get(),
+                                                        _param_hy_dtrim_p_vmin.get(),
+                                                        0.0f);
+                                        trim(2) += interpolate(airspeed, _param_hy_airspd_min.get(), _param_hy_airspd_trim.get(),
+                                                        _param_hy_dtrim_y_vmin.get(),
+                                                        0.0f);
 
-				Vector3f body_rates_setpoint = Vector3f(_rates_sp.roll, _rates_sp.pitch, _rates_sp.yaw);
+                                } else {
+                                        trim(0) += interpolate(airspeed, _param_hy_airspd_trim.get(), _param_hy_airspd_max.get(), 0.0f,
+                                                        _param_hy_dtrim_r_vmax.get());
+                                        trim(1) += interpolate(airspeed, _param_hy_airspd_trim.get(), _param_hy_airspd_max.get(), 0.0f,
+                                                        _param_hy_dtrim_p_vmax.get());
+                                        trim(2) += interpolate(airspeed, _param_hy_airspd_trim.get(), _param_hy_airspd_max.get(), 0.0f,
+                                                        _param_hy_dtrim_y_vmax.get());
+                                }
 
-				// Run attitude RATE controllers which need the desired attitudes from above, add trim.
-				const Vector3f angular_acceleration_setpoint = _rate_control.update(rates, body_rates_setpoint, angular_accel, dt,
-						false);
+                                _rates_sp_sub.update(&_rates_sp);
 
-				const Vector3f gain_ff(_param_hy_rr_ff.get(), _param_hy_pr_ff.get(), _param_hy_yr_ff.get());
-				const Vector3f feedforward = gain_ff.emult(body_rates_setpoint) * _airspeed_scaling;
+                                Vector3f body_rates_setpoint = Vector3f(_rates_sp.roll, _rates_sp.pitch, _rates_sp.yaw);
 
-				Vector3f control_u = angular_acceleration_setpoint * _airspeed_scaling * _airspeed_scaling + feedforward;
+                                // Run attitude RATE controllers which need the desired attitudes from above, add trim.
+                                const Vector3f angular_acceleration_setpoint = _rate_control.update(rates, body_rates_setpoint, angular_accel, dt,
+                                                false);
 
-				// Special case yaw in Acro: if the parameter HY_ACRO_YAW_CTL is not set then don't control yaw
-				if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO && !_param_hy_acro_yaw_en.get()) {
-					control_u(2) = _manual_control_setpoint.yaw * _param_hy_man_y_sc.get();
-					_rate_control.resetIntegral(2);
-				}
+                                const Vector3f gain_ff(_param_hy_rr_ff.get(), _param_hy_pr_ff.get(), _param_hy_yr_ff.get());
+                                const Vector3f feedforward = gain_ff.emult(body_rates_setpoint) * _airspeed_scaling;
 
-				if (control_u.isAllFinite()) {
-					matrix::constrain(control_u + trim, -1.f, 1.f).copyTo(_hydro_torque_setpoint.xyz);
+                                Vector3f control_u = angular_acceleration_setpoint * _airspeed_scaling * _airspeed_scaling + feedforward;
 
-				} else {
-					_rate_control.resetIntegral();
-					trim.copyTo(_hydro_torque_setpoint.xyz);
-				}
+                                // Special case yaw in Acro: if the parameter HY_ACRO_YAW_CTL is not set then don't control yaw
+                                if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO && !_param_hy_acro_yaw_en.get()) {
+                                        control_u(2) = _manual_control_setpoint.yaw * _param_hy_man_y_sc.get();
+                                        _rate_control.resetIntegral(2);
+                                }
 
-				/* throttle passed through if it is finite */
-				_thrust_sp_norm = PX4_ISFINITE(_rates_sp.thrust_body[0]) ? _rates_sp.thrust_body[0] : 0.0f;
+                                if (control_u.isAllFinite()) {
+                                        matrix::constrain(control_u + trim, -1.f, 1.f).copyTo(_hydro_torque_setpoint.xyz);
 
-				/* scale effort by battery status */
-				if (_param_hy_bat_scale_en.get() && _thrust_sp_norm > 0.1f) {
+                                } else {
+                                        _rate_control.resetIntegral();
+                                        trim.copyTo(_hydro_torque_setpoint.xyz);
+                                }
 
-					if (_battery_status_sub.updated()) {
-						battery_status_s battery_status{};
+                                /* throttle passed through if it is finite */
+                                _thrust_sp_norm = PX4_ISFINITE(_rates_sp.thrust_body[0]) ? _rates_sp.thrust_body[0] : 0.0f;
 
-						if (_battery_status_sub.copy(&battery_status) && battery_status.connected && battery_status.scale > 0.f) {
-							_battery_scale = battery_status.scale;
-						}
-					}
+                                /* scale effort by battery status */
+                                if (_param_hy_bat_scale_en.get() && _thrust_sp_norm > 0.1f) {
 
-					_thrust_sp_norm *= _battery_scale;
-				}
-			}
+                                        if (_battery_status_sub.updated()) {
+                                                battery_status_s battery_status{};
 
-		} else {
-			_rate_control.resetIntegral();
-		}
+                                                if (_battery_status_sub.copy(&battery_status) && battery_status.connected && battery_status.scale > 0.f) {
+                                                        _battery_scale = battery_status.scale;
+                                                }
+                                        }
 
-		//执行补偿操作和滑行深度控制
-		if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_MANUAL)
-		{
-			// Add feed-forward from roll control output to yaw control output
-			// This can be used to counteract the adverse yaw effect when rolling the plane
-			_hydro_torque_setpoint.xyz[2] = math::constrain(_hydro_torque_setpoint.xyz[2] + _param_hy_rll_to_yaw_ff.get() *
-			_hydro_torque_setpoint.xyz[0], -1.f, 1.f);
+                                        _thrust_sp_norm *= _battery_scale;
+                                }
+                        }
 
-			//推力前馈到pit轴力矩上
-			_hydro_torque_setpoint.xyz[1] = math::constrain(_hydro_torque_setpoint.xyz[1] + _param_thr_to_pit_ff.get() *
-			_thrust_sp_norm, -1.f, 1.f);
+                } else {
+                        _rate_control.resetIntegral();
+                }
 
-			//读取消息
-			_vehicle_attitude_sub.update(&_vehicle_attitude);
-			Eulerf euler_angles(Quatf(_vehicle_attitude.q));
-			_depth_fusion_sub.update(&_depth_fusion);
-			_debug_key_value_sub.update(&_debug_key_value);
-			_vehicle_air_data_sub.update(&_vehicle_air_data);
-			_depth_estimated_sub.update(&_depth_estimated);
-			_debug_vect_sub.update(&_debug_vect);
+                //执行补偿操作和滑行深度控制
+                if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_MANUAL)
+                {
+                        // Add feed-forward from roll control output to yaw control output
+                        // This can be used to counteract the adverse yaw effect when rolling the plane
+                        _hydro_torque_setpoint.xyz[2] = math::constrain(_hydro_torque_setpoint.xyz[2] + _param_hy_rll_to_yaw_ff.get() *
+                        _hydro_torque_setpoint.xyz[0], -1.f, 1.f);
 
-			// 深度（高度）真值和设定值获取，//! 向下为正，越深越正
-			// float depth = _depth_fusion.fudepth * 0.01f;//换算单位
-			// float depth = - _debug_key_value.value;
-			// float depth = _vehicle_air_data.baro_alt_meter * 0.01f;
-			float depth = _depth_estimated.depth_estimated;
-			float depth_rate = 0;
-			// float depth = _debug_vect.x;
-			// float depth_rate = _debug_vect.y;
-			float depth_setpoint = _param_hy_dc_sp.get();
+                        //推力前馈到pit轴力矩上
+                        _hydro_torque_setpoint.xyz[1] = math::constrain(_hydro_torque_setpoint.xyz[1] + _param_thr_to_pit_ff.get() *
+                        _thrust_sp_norm, -1.f, 1.f);
 
-			_hydro_depth_control_message.depth = depth;
-			_hydro_depth_control_message.depth_rate = depth_rate;
-			_hydro_depth_control_message.depth_setpoint = depth_setpoint;
+                        //读取消息
+                        _vehicle_attitude_sub.update(&_vehicle_attitude);
+                        Eulerf euler_angles(Quatf(_vehicle_attitude.q));
+                        _depth_fusion_sub.update(&_depth_fusion);
+                        _debug_key_value_sub.update(&_debug_key_value);
+                        _vehicle_air_data_sub.update(&_vehicle_air_data);
+                        _depth_estimated_sub.update(&_depth_estimated);
+                        _debug_vect_sub.update(&_debug_vect);
 
-			// 水平推力比例限幅，限制遥控器的最大命令
-			float throttle_limited;
-			throttle_limited = math::constrain(_thrust_sp_norm, -_param_hy_dc_max_thr.get(), _param_hy_dc_max_thr.get());
-			_hydro_depth_control_message.throttle_limited = throttle_limited;
+                        // 深度（高度）真值和设定值获取，//! 向下为正，越深越正
+                        // float depth = _depth_fusion.fudepth * 0.01f;//换算单位
+                        // float depth = - _debug_key_value.value;
+                        // float depth = _vehicle_air_data.baro_alt_meter * 0.01f;
+                        float depth = _depth_estimated.depth_estimated;
+                        float depth_rate = 0;
+                        // float depth = _debug_vect.x;
+                        // float depth_rate = _debug_vect.y;
+                        float depth_setpoint = _param_hy_dc_sp.get();
 
-			//水平推力计算，向前为正，最大为水下推进器推力的2倍
-			//! 注意，水翼的推力计算都用真值，单位是N，但力矩仍用归一化值
-			float hydro_horizontal_thrust_setpoint = throttle_limited * 2 * _param_hy_rt_max_thrust.get();
-			_hydro_depth_control_message.horizontal_thrust = hydro_horizontal_thrust_setpoint;
+                        _hydro_depth_control_message.depth = depth;
+                        _hydro_depth_control_message.depth_rate = depth_rate;
+                        _hydro_depth_control_message.depth_setpoint = depth_setpoint;
 
-			/* 非光滑反馈 START */
-			//TODO 非光滑反馈还有一个对舵机角度进行反馈的项，但这个项目前得不到
-			// 非光滑反馈误差计算
-			float nsf_e1 = depth_setpoint - depth;
-			float nsf_e2 = - depth_rate;
-			float nsf_s = nsf_e1 + nsf_e2*_param_hy_nsf_pt.get();
-			float nsf_s_norm = nsf_s / _param_hy_nsf_norm.get();
-			float nsf_s_norm_power = std::pow(nsf_s_norm, _param_hy_nsf_power.get());
-			// 非光滑反馈控制量计算
-			float nsf_u = nsf_s_norm_power * _param_hy_nsf_kp.get();
-			// 非光滑反馈控制量限幅
-			float nsf_u_limited =\
-				math::constrain(nsf_u, _param_hy_nsf_umin.get(), _param_hy_nsf_umax.get());
-			// 记录
-			_hydro_depth_control_message.nsf_e1 = nsf_e1;
-			_hydro_depth_control_message.nsf_e2 = nsf_e2;
-			_hydro_depth_control_message.nsf_s = nsf_s;
-			_hydro_depth_control_message.nsf_s_norm = nsf_s_norm;
-			_hydro_depth_control_message.nsf_s_norm_power = nsf_s_norm_power;
-			_hydro_depth_control_message.nsf_u = nsf_u;
-			_hydro_depth_control_message.nsf_u_limited = nsf_u_limited;
-			/* 非光滑反馈 END */
+                        // 水平推力比例限幅，限制遥控器的最大命令
+                        float throttle_limited;
+                        throttle_limited = math::constrain(_thrust_sp_norm, -_param_hy_dc_max_thr.get(), _param_hy_dc_max_thr.get());
+                        _hydro_depth_control_message.throttle_limited = throttle_limited;
 
-			/* 高阶滑模 START */
-			//控制量计算
-			float hsmc_x1 = depth - depth_setpoint;
-			float hsmc_x2 = depth_rate;
-			float hsmc_surface =\
-				_param_hy_hsmc_mass.get() * _param_hy_hsmc_alpha.get() * _param_hy_hsmc_alpha.get() * hsmc_x1 +\
-				_param_hy_hsmc_mass.get() * 2 * _param_hy_hsmc_alpha.get() * hsmc_x2 + _hsmc_x3;
-			float hsmc_u =\
-				- _param_hy_hsmc_mass.get() * _param_hy_hsmc_alpha.get() * _param_hy_hsmc_alpha.get() * hsmc_x2 -\
-				2 * _param_hy_hsmc_alpha.get() * _hsmc_x3 -\
-				_param_hy_hsmc_eta.get() * math::signNoZero(hsmc_surface);
-			//积分
-			_hsmc_x3 += hsmc_u * _param_hy_hsmc_ts.get();
-			_hsmc_x3 = math::constrain(_hsmc_x3, _param_hy_hsmc_imin.get(), _param_hy_hsmc_imax.get());
-			//记录
-			_hydro_depth_control_message.hsmc_x1 = hsmc_x1;
-			_hydro_depth_control_message.hsmc_x2 = hsmc_x2;
-			_hydro_depth_control_message.hsmc_x3 = _hsmc_x3;
-			_hydro_depth_control_message.hsmc_surface = hsmc_surface;
-			_hydro_depth_control_message.hsmc_u = hsmc_u;
-			/* 高阶滑模 END */
+                        //水平推力计算，向前为正，最大为水下推进器推力的2倍
+                        //! 注意，水翼的推力计算都用真值，单位是N，但力矩仍用归一化值
+                        float hydro_horizontal_thrust_setpoint = throttle_limited * 2 * _param_hy_rt_max_thrust.get();
+                        _hydro_depth_control_message.horizontal_thrust = hydro_horizontal_thrust_setpoint;
 
-			// 根据模式选择竖直推力，向下为正
-			float hydro_vertical_thrust_setpoint;
-			int32_t dc_mode = _param_hy_dc_mode.get();
-			if(dc_mode == 1)
-				hydro_vertical_thrust_setpoint = nsf_u_limited + _param_hy_dc_ff.get();
-			else if(dc_mode == 2)
-				hydro_vertical_thrust_setpoint = _hsmc_x3 + _param_hy_dc_ff.get();
-			else if(dc_mode == 3)
-				hydro_vertical_thrust_setpoint = _manual_control_setpoint.pitch * _param_hy_man_ratio.get() + _param_hy_dc_ff.get();
-			else if(dc_mode == 4)
-				hydro_vertical_thrust_setpoint = _param_hy_dc_ff.get();
-			else
-				hydro_vertical_thrust_setpoint = 0;
+                        /* 非光滑反馈 START */
+                        //TODO 非光滑反馈还有一个对舵机角度进行反馈的项，但这个项目前得不到
+                        // 非光滑反馈误差计算
+                        float nsf_e1 = depth_setpoint - depth;
+                        float nsf_e2 = - depth_rate;
+                        float nsf_s = nsf_e1 + nsf_e2*_param_hy_nsf_pt.get();
+                        float nsf_s_norm = nsf_s / _param_hy_nsf_norm.get();
+                        float nsf_s_norm_power = std::pow(nsf_s_norm, _param_hy_nsf_power.get());
+                        // 非光滑反馈控制量计算
+                        float nsf_u = nsf_s_norm_power * _param_hy_nsf_kp.get();
+                        // 非光滑反馈控制量限幅
+                        float nsf_u_limited =\
+                                math::constrain(nsf_u, _param_hy_nsf_umin.get(), _param_hy_nsf_umax.get());
+                        // 记录
+                        _hydro_depth_control_message.nsf_e1 = nsf_e1;
+                        _hydro_depth_control_message.nsf_e2 = nsf_e2;
+                        _hydro_depth_control_message.nsf_s = nsf_s;
+                        _hydro_depth_control_message.nsf_s_norm = nsf_s_norm;
+                        _hydro_depth_control_message.nsf_s_norm_power = nsf_s_norm_power;
+                        _hydro_depth_control_message.nsf_u = nsf_u;
+                        _hydro_depth_control_message.nsf_u_limited = nsf_u_limited;
+                        /* 非光滑反馈 END */
+
+                        /* 高阶滑模 START */
+                        //控制量计算
+                        float hsmc_x1 = depth - depth_setpoint;
+                        float hsmc_x2 = depth_rate;
+                        float hsmc_surface =\
+                                _param_hy_hsmc_mass.get() * _param_hy_hsmc_alpha.get() * _param_hy_hsmc_alpha.get() * hsmc_x1 +\
+                                _param_hy_hsmc_mass.get() * 2 * _param_hy_hsmc_alpha.get() * hsmc_x2 + _hsmc_x3;
+                        float hsmc_u =\
+                                - _param_hy_hsmc_mass.get() * _param_hy_hsmc_alpha.get() * _param_hy_hsmc_alpha.get() * hsmc_x2 -\
+                                2 * _param_hy_hsmc_alpha.get() * _hsmc_x3 -\
+                                _param_hy_hsmc_eta.get() * math::signNoZero(hsmc_surface);
+                        //积分
+                        _hsmc_x3 += hsmc_u * _param_hy_hsmc_ts.get();
+                        _hsmc_x3 = math::constrain(_hsmc_x3, _param_hy_hsmc_imin.get(), _param_hy_hsmc_imax.get());
+                        //记录
+                        _hydro_depth_control_message.hsmc_x1 = hsmc_x1;
+                        _hydro_depth_control_message.hsmc_x2 = hsmc_x2;
+                        _hydro_depth_control_message.hsmc_x3 = _hsmc_x3;
+                        _hydro_depth_control_message.hsmc_surface = hsmc_surface;
+                        _hydro_depth_control_message.hsmc_u = hsmc_u;
+                        /* 高阶滑模 END */
+
+                        // 根据模式选择竖直推力，向下为正
+                        float hydro_vertical_thrust_setpoint;
+                        int32_t dc_mode = _param_hy_dc_mode.get();
+                        if(dc_mode == 1)
+                                hydro_vertical_thrust_setpoint = nsf_u_limited + _param_hy_dc_ff.get();
+                        else if(dc_mode == 2)
+                                hydro_vertical_thrust_setpoint = _hsmc_x3 + _param_hy_dc_ff.get();
+                        else if(dc_mode == 3)
+                                hydro_vertical_thrust_setpoint = _manual_control_setpoint.pitch * _param_hy_man_ratio.get() + _param_hy_dc_ff.get();
+                        else if(dc_mode == 4)
+                                hydro_vertical_thrust_setpoint = _param_hy_dc_ff.get();
+                        else
+                                hydro_vertical_thrust_setpoint = 0;
 
 
-			//滑行时，机身的俯仰角近似为自然攻角，实际攻角等于翼面偏转角度加上自然攻角
-			float alpha0 = euler_angles.theta();
+                        //滑行时，机身的俯仰角近似为自然攻角，实际攻角等于翼面偏转角度加上自然攻角
+                        float alpha0 = euler_angles.theta();
 
-			//水平和竖直推力转换为机身坐标系下的推力，使用二维坐标转换
-			_hydro_thrust_setpoint.xyz[0] = hydro_horizontal_thrust_setpoint * std::cos(alpha0) - hydro_vertical_thrust_setpoint * std::sin(alpha0);
-			_hydro_thrust_setpoint.xyz[2] = hydro_horizontal_thrust_setpoint * std::sin(alpha0) + hydro_vertical_thrust_setpoint * std::cos(alpha0);
+                        //水平和竖直推力转换为机身坐标系下的推力，使用二维坐标转换
+                        _hydro_thrust_setpoint.xyz[0] = hydro_horizontal_thrust_setpoint * std::cos(alpha0) - hydro_vertical_thrust_setpoint * std::sin(alpha0);
+                        _hydro_thrust_setpoint.xyz[2] = hydro_horizontal_thrust_setpoint * std::sin(alpha0) + hydro_vertical_thrust_setpoint * std::cos(alpha0);
 
-			//y方向推力始终为0
-			_hydro_thrust_setpoint.xyz[1] = 0;
+                        //y方向推力始终为0
+                        _hydro_thrust_setpoint.xyz[1] = 0;
 
-			_hydro_depth_control_message.timestamp = hrt_absolute_time();
-			_hydro_depth_control_message_pub.publish(_hydro_depth_control_message);
-		}
+                        _hydro_depth_control_message.timestamp = hrt_absolute_time();
+                        _hydro_depth_control_message_pub.publish(_hydro_depth_control_message);
+                }
 
-		//发布hydro的setpoint；其他情况下，也要发布0
-		if(_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_MANUAL)
-		{
-			;
-		}
-		else
-		{
-			_hydro_thrust_setpoint.xyz[0] = 0;
-			_hydro_thrust_setpoint.xyz[1] = 0;
-			_hydro_thrust_setpoint.xyz[2] = 0;
-			_hydro_torque_setpoint.xyz[0] = 0;
-			_hydro_torque_setpoint.xyz[1] = 0;
-			_hydro_torque_setpoint.xyz[2] = 0;
-		}
-		_hydro_thrust_setpoint.timestamp = hrt_absolute_time();
-		_hydro_thrust_setpoint.timestamp_sample = vehicle_angular_velocity.timestamp_sample;
-		_hydro_thrust_setpoint_pub.publish(_hydro_thrust_setpoint);
+                //发布hydro的setpoint；其他情况下，也要发布0
+                if(_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_MANUAL)
+                {
+                        ;
+                }
+                else
+                {
+                        _hydro_thrust_setpoint.xyz[0] = 0;
+                        _hydro_thrust_setpoint.xyz[1] = 0;
+                        _hydro_thrust_setpoint.xyz[2] = 0;
+                        _hydro_torque_setpoint.xyz[0] = 0;
+                        _hydro_torque_setpoint.xyz[1] = 0;
+                        _hydro_torque_setpoint.xyz[2] = 0;
+                }
+                _hydro_thrust_setpoint.timestamp = hrt_absolute_time();
+                _hydro_thrust_setpoint.timestamp_sample = vehicle_angular_velocity.timestamp_sample;
+                _hydro_thrust_setpoint_pub.publish(_hydro_thrust_setpoint);
 
-		_hydro_torque_setpoint.timestamp = hrt_absolute_time();
-		_hydro_torque_setpoint.timestamp_sample = vehicle_angular_velocity.timestamp_sample;
-		_hydro_torque_setpoint_pub.publish(_hydro_torque_setpoint);
-	}
+                _hydro_torque_setpoint.timestamp = hrt_absolute_time();
+                _hydro_torque_setpoint.timestamp_sample = vehicle_angular_velocity.timestamp_sample;
+                _hydro_torque_setpoint_pub.publish(_hydro_torque_setpoint);
+        }
 
-	// backup schedule
-	ScheduleDelayed(20_ms);
+        // backup schedule
+        ScheduleDelayed(20_ms);
 
-	perf_end(_loop_perf);
+        perf_end(_loop_perf);
 }
 
 int HydroRateControl::task_spawn(int argc, char *argv[])
 {
-	HydroRateControl *instance = new HydroRateControl();
+        HydroRateControl *instance = new HydroRateControl();
 
-	if (instance) {
-		_object.store(instance);
-		_task_id = task_id_is_work_queue;
+        if (instance) {
+                _object.store(instance);
+                _task_id = task_id_is_work_queue;
 
-		if (instance->init()) {
-			return PX4_OK;
-		}
+                if (instance->init()) {
+                        return PX4_OK;
+                }
 
-	} else {
-		PX4_ERR("alloc failed");
-	}
+        } else {
+                PX4_ERR("alloc failed");
+        }
 
-	delete instance;
-	_object.store(nullptr);
-	_task_id = -1;
+        delete instance;
+        _object.store(nullptr);
+        _task_id = -1;
 
-	return PX4_ERROR;
+        return PX4_ERROR;
 }
 
 int HydroRateControl::custom_command(int argc, char *argv[])
 {
-	return print_usage("unknown command");
+        return print_usage("unknown command");
 }
 
 int HydroRateControl::print_usage(const char *reason)
 {
-	if (reason) {
-		PX4_WARN("%s\n", reason);
-	}
+        if (reason) {
+                PX4_WARN("%s\n", reason);
+        }
 
-	PRINT_MODULE_DESCRIPTION(
-		R"DESCR_STR(
+        PRINT_MODULE_DESCRIPTION(
+                R"DESCR_STR(
 ### Description
 hydro_rate_control is the water-air cross medium rate controller.
 
 )DESCR_STR");
 
-	/*PRINT_MODULE_USAGE_NAME("hydro_rate_control", "controller");
-	PRINT_MODULE_USAGE_COMMAND("start");
-	PRINT_MODULE_USAGE_ARG("vtol", "VTOL mode", true);
-	PRINT_MODULE_USAGE_DEFAULT_COMMANDS();*/
-
-	return 0;
+        return 0;
 }
 
 extern "C" __EXPORT int hydro_rate_control_main(int argc, char *argv[])
 {
-	return HydroRateControl::main(argc, argv);
+        return HydroRateControl::main(argc, argv);
 }
