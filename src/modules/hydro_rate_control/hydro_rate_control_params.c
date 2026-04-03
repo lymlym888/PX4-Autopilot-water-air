@@ -117,7 +117,7 @@ PARAM_DEFINE_FLOAT(HY_MF_P_B0, 8.65f);
  * @min 0.0
  * @group HY MFESO
  */
-PARAM_DEFINE_FLOAT(HY_MF_C_WC, 4.8f);
+PARAM_DEFINE_FLOAT(HY_MF_C_WC, 2.0f);
 
 /**
  * MFESO Calm Sea State Damping Ratio (zeta)
@@ -170,12 +170,13 @@ PARAM_DEFINE_FLOAT(HY_MF_TAU, 0.0025f);
 
 /**
  * Scale MFESO Uc to normalized torque [-1, 1]
- * * NOTE: Adjust this to map the physical output to PWM actuator limits
+ *
+ * NOTE: Adjust this to map the physical output to PWM actuator limits
  *
  * @min 0.000001
  * @group HY MFESO
  */
-PARAM_DEFINE_FLOAT(HY_MF_U_SCL, 1.0f);
+PARAM_DEFINE_FLOAT(HY_MF_U_SCL, 0.5f);
 
 /**
  * STAB max roll angle from RC (deg)
