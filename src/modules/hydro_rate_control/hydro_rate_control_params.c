@@ -42,84 +42,99 @@
 
 
 /**
- * Enable CADRC in STAB mode
+ * Enable AIC in STAB mode
  *
  * @boolean
- * @group HY CADRC
+ * @group HY AIC
  */
-PARAM_DEFINE_INT32(HY_CADRC_EN, 1);
+PARAM_DEFINE_INT32(HY_AIC_EN, 0);
 
 /**
- * CADRC J0 (inertia-like parameter)
+ * AIC Kp (Proportional gain)
  *
+ * PD control proportional gain for tracking error.
+ * @min 0.0
+ * @group HY AIC
+ */
+PARAM_DEFINE_FLOAT(HY_AIC_KP, 20.0f);
+
+/**
+ * AIC Kd (Derivative gain)
+ *
+ * PD control derivative gain for tracking error rate.
+ * @min 0.0
+ * @group HY AIC
+ */
+PARAM_DEFINE_FLOAT(HY_AIC_KD, 2.0f);
+
+/**
+ * AIC b0 (Control gain)
+ *
+ * Maximum angular acceleration produced by normalized torque.
  * @min 0.001
- * @group HY CADRC
+ * @group HY AIC
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_J0, 10.1746f);
+PARAM_DEFINE_FLOAT(HY_AIC_B0, 10.0f);
 
 /**
- * CADRC kp1 (position loop gain)
+ * AIC wo (ESO bandwidth)
  *
+ * Bandwidth of the Linear Extended State Observer.
  * @min 0.0
- * @group HY CADRC
+ * @group HY AIC
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_KP1, 500.0f);
+PARAM_DEFINE_FLOAT(HY_AIC_WO, 20.0f);
 
 /**
- * CADRC kp2 (rate loop gain)
+ * AIC k_f (Low-pass filter cutoff frequency)
  *
+ * Cutoff frequency for the AIC high-frequency disturbance extractor (rad/s).
  * @min 0.0
- * @group HY CADRC
+ * @group HY AIC
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_KP2, 1000.0f);
+PARAM_DEFINE_FLOAT(HY_AIC_KF, 10.0f);
 
 /**
- * CADRC omega_o1 (ESO bandwidth for position loop)
+ * AIC ku (Adaptive gain coefficient)
  *
+ * Strength of the Active Interference Compensation. 0 disables AIC.
  * @min 0.0
- * @group HY CADRC
+ * @group HY AIC
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_O1, 15.0f);
+PARAM_DEFINE_FLOAT(HY_AIC_KU, 0.0f);
 
 /**
- * CADRC omega_o2 (ESO bandwidth for rate loop)
+ * AIC Ks_max (Maximum compensation gain)
  *
+ * Upper limit for the adaptive compensation gain.
  * @min 0.0
- * @group HY CADRC
+ * @group HY AIC
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_O2, 15.0f);
+PARAM_DEFINE_FLOAT(HY_AIC_KSMAX, 1.0f);
 
 /**
- * CADRC alpha (adaptive gain). 0 disables adaptation
- *
- * @min 0.0
- * @group HY CADRC
- */
-PARAM_DEFINE_FLOAT(HY_CADRC_ALP, 0.0f);
-
-/**
- * CADRC tau override (s). 0 = use dt from gyro/scheduler
+ * AIC tau override (s). 0 = use dt from gyro/scheduler
  *
  * @min 0.0
  * @max 0.02
- * @group HY CADRC
+ * @group HY AIC
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_TAU, 0.0025f);
+PARAM_DEFINE_FLOAT(HY_AIC_TAU, 0.0025f);
 
 /**
- * Scale CADRC Uc to normalized torque [-1, 1]
+ * Scale AIC Output to normalized torque [-1, 1]
  *
  * @min 0.000001
- * @group HY CADRC
+ * @group HY AIC
  */
-PARAM_DEFINE_FLOAT(HY_CADRC_U_SCALE, 0.001f);
+PARAM_DEFINE_FLOAT(HY_AIC_USCAL, 1.0f);
 
 /**
  * STAB max roll angle from RC (deg)
  *
  * @min 0.0
  * @max 80.0
- * @group HY CADRC
+ * @group HY AIC
  */
 PARAM_DEFINE_FLOAT(HY_ROLL_MAX, 30.0f);
 
@@ -128,7 +143,7 @@ PARAM_DEFINE_FLOAT(HY_ROLL_MAX, 30.0f);
  *
  * @min 0.0
  * @max 80.0
- * @group HY CADRC
+ * @group HY AIC
  */
 PARAM_DEFINE_FLOAT(HY_PITCH_MAX, 20.0f);
 
