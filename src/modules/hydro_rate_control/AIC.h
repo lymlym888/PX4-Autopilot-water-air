@@ -26,6 +26,8 @@ public:
     // 获取总扰动估计值 z3
     float getZ3() const { return _z3; }
 
+    float getZZ3() const { return _zz3; }
+
     // 重置控制器状态
     void reset();
 
@@ -56,6 +58,7 @@ private:
     float _z2{0.0f};           // 状态估计: 信号微分
     float _z3{0.0f};           // 状态估计: 总扰动
     float _z_lpf{0.0f};        // AIC 低通滤波器状态
+    float _zz3{0.0f};
 
     float _u_prev{0.0f};       // 上一时刻的控制输出 (用于 LESO 更新)
     float _u{0.0f};            // 当前时刻的总控制输出

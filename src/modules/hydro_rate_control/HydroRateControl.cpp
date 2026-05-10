@@ -241,7 +241,7 @@ void HydroRateControl::Run()
                                 // 记录日志
                                 _hydro_aic_control_message.roll_sp = roll_sp;
                                 _hydro_aic_control_message.pitch_sp = pitch_sp;
-                                _hydro_aic_control_message.roll_z3 = _aic_roll.getZ3();
+                                _hydro_aic_control_message.roll_z3 = _aic_roll.getZZ3();
                                 _hydro_aic_control_message.pitch_z3 = _aic_pitch.getZ3();
 
                                 // 获取总控制输出 u -> 归一化 torque（交给 control allocation）

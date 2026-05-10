@@ -59,6 +59,8 @@ void ADRC_AIC::updateLESO(float y, float u, float dt)
     _z1 += dt * z1_dot;
     _z2 += dt * z2_dot;
     _z3 += dt * z3_dot;
+    if(_z3 >= 30)	_z3 = 30;
+    if(_z3 <= -30)	_z3 = -30;
 }
 
 float ADRC_AIC::aicCompensation(float z3, float dt)
@@ -111,6 +113,10 @@ void ADRC_AIC::update(float y, float ref, float ref_dot, float dt)
 
     // 6. 执行器限幅抗饱和
     _u = math::constrain(_u, _u_min, _u_max);
+
+    _zz3 = _z3;
+
+    _z3 = 0;
 
     // 7. 安全性检查：如果输出为 NaN 或 Inf，立刻重置并安全输出 0
     if (!PX4_ISFINITE(_u) || !PX4_ISFINITE(_z1)) {
