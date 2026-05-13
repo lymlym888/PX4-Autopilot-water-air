@@ -100,6 +100,33 @@ HydroRateControl::parameters_update()
 	_cadrc_roll.setAlpha(alpha);
 	_cadrc_pitch.setAlpha(alpha);
 
+	// 深度 ADRC-KF 参数
+	_depth_adrc.setParams(
+		_param_hy_dadrc_b0.get(),
+		_param_hy_dadrc_r.get(),
+
+		_param_hy_dadrc_b01.get(),
+		_param_hy_dadrc_b02.get(),
+		_param_hy_dadrc_b03.get(),
+
+		_param_hy_dadrc_a1.get(),
+		_param_hy_dadrc_a2.get(),
+		_param_hy_dadrc_dlt.get(),
+
+		_param_hy_dadrc_na1.get(),
+		_param_hy_dadrc_na2.get(),
+		_param_hy_dadrc_ndlt.get(),
+
+		_param_hy_dadrc_k1.get(),
+		_param_hy_dadrc_k2.get(),
+
+		_param_hy_dadrc_qpos.get(),
+		_param_hy_dadrc_qvel.get(),
+		_param_hy_dadrc_rm.get(),
+
+		_param_hy_dadrc_umin.get(),
+		_param_hy_dadrc_umax.get()
+	);
 
 	return PX4_OK;
 }
@@ -423,6 +450,36 @@ void HydroRateControl::Run()
 			_hydro_depth_control_message.depth_rate = depth_rate;
 			_hydro_depth_control_message.depth_setpoint = depth_setpoint;
 
+			// 深度 ADRC-KF 控制器
+			const int32_t dc_mode_now = _param_hy_dc_mode.get();
+
+			// 从非 DADRC 模式切换到 DADRC 模式时，用当前深度重置内部状态，避免切换瞬间冲击
+			if (dc_mode_now == 5 && _prev_dc_mode != 5) {
+				_depth_adrc.reset(depth);
+			}
+
+			_prev_dc_mode = dc_mode_now;
+
+			// 使用和主控制循环一致的 dt。dt 在本函数前面已经计算过。
+			float dadrc_u_limited = 0.0f;
+
+			if (dc_mode_now == 5) {
+				dadrc_u_limited = _depth_adrc.update(depth_setpoint, depth, dt);
+			}
+
+			// 记录深度 ADRC-KF 内部状态
+			_hydro_depth_control_message.dadrc_td_x1 = _depth_adrc.getTdX1();
+			_hydro_depth_control_message.dadrc_td_x2 = _depth_adrc.getTdX2();
+			_hydro_depth_control_message.dadrc_kf_depth = _depth_adrc.getKfDepth();
+			_hydro_depth_control_message.dadrc_kf_rate = _depth_adrc.getKfRate();
+			_hydro_depth_control_message.dadrc_eso_z1 = _depth_adrc.getEsoZ1();
+			_hydro_depth_control_message.dadrc_eso_z2 = _depth_adrc.getEsoZ2();
+			_hydro_depth_control_message.dadrc_eso_z3 = _depth_adrc.getEsoZ3();
+			_hydro_depth_control_message.dadrc_e1 = _depth_adrc.getE1();
+			_hydro_depth_control_message.dadrc_e2 = _depth_adrc.getE2();
+			_hydro_depth_control_message.dadrc_u = _depth_adrc.getURaw();
+			_hydro_depth_control_message.dadrc_u_limited = _depth_adrc.getULimited();
+
 			// 水平推力比例限幅，限制遥控器的最大命令
 			float throttle_limited;
 			throttle_limited = math::constrain(_thrust_sp_norm, -_param_hy_dc_max_thr.get(), _param_hy_dc_max_thr.get());
@@ -481,16 +538,28 @@ void HydroRateControl::Run()
 			// 根据模式选择竖直推力，向下为正
 			float hydro_vertical_thrust_setpoint;
 			int32_t dc_mode = _param_hy_dc_mode.get();
-			if(dc_mode == 1)
+
+			if (dc_mode == 1) {
 				hydro_vertical_thrust_setpoint = nsf_u_limited + _param_hy_dc_ff.get();
-			else if(dc_mode == 2)
+
+			} else if (dc_mode == 2) {
 				hydro_vertical_thrust_setpoint = _hsmc_x3 + _param_hy_dc_ff.get();
-			else if(dc_mode == 3)
+
+			} else if (dc_mode == 3) {
 				hydro_vertical_thrust_setpoint = _manual_control_setpoint.pitch * _param_hy_man_ratio.get() + _param_hy_dc_ff.get();
-			else if(dc_mode == 4)
+
+			} else if (dc_mode == 4) {
 				hydro_vertical_thrust_setpoint = _param_hy_dc_ff.get();
-			else
-				hydro_vertical_thrust_setpoint = 0;
+
+			} else if (dc_mode == 5) {
+				// 深度 ADRC-KF
+				hydro_vertical_thrust_setpoint = dadrc_u_limited + _param_hy_dc_ff.get();
+
+			} else {
+				hydro_vertical_thrust_setpoint = 0.0f;
+			}
+
+			_hydro_depth_control_message.vertical_thrust = hydro_vertical_thrust_setpoint;
 
 
 			//滑行时，机身的俯仰角近似为自然攻角，实际攻角等于翼面偏转角度加上自然攻角

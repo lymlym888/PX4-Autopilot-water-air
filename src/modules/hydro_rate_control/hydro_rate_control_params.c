@@ -594,8 +594,10 @@ PARAM_DEFINE_FLOAT(HY_MAN_YR_MAX, 30.f);
  * @value 2 HSMC
  * @value 3 Manual
  * @value 4 Feedforward Only
+ * @value 5 DADRC-KF
  */
 PARAM_DEFINE_INT32(HY_DC_MODE, 0);
+
 //深度控制模式选择
 
 /**
@@ -629,6 +631,172 @@ PARAM_DEFINE_FLOAT(HY_DC_SP, 0.05f);
 PARAM_DEFINE_FLOAT(HY_DC_MAX_THR, 1.0f);
 //深度控制最大推力比例
 
+
+// 深度 ADRC-KF 参数
+
+/**
+ * DADRC input gain b0
+ *
+ * @min 0.0001
+ * @decimal 4
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_B0, 1.2f);
+
+/**
+ * DADRC TD tracking speed factor
+ *
+ * @min 0.0001
+ * @decimal 4
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_R, 1.0f);
+
+/**
+ * DADRC ESO beta01
+ *
+ * @min 0.0
+ * @decimal 4
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_B01, 25.0f);
+
+/**
+ * DADRC ESO beta02
+ *
+ * @min 0.0
+ * @decimal 4
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_B02, 30.0f);
+
+/**
+ * DADRC ESO beta03
+ *
+ * @min 0.0
+ * @decimal 4
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_B03, 40.0f);
+
+/**
+ * DADRC ESO alpha1
+ *
+ * @min 0.01
+ * @max 1.0
+ * @decimal 4
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_A1, 0.5f);
+
+/**
+ * DADRC ESO alpha2
+ *
+ * @min 0.01
+ * @max 1.0
+ * @decimal 4
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_A2, 0.35f);
+
+/**
+ * DADRC ESO delta
+ *
+ * @min 0.000001
+ * @decimal 6
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_DLT, 0.002f);
+
+/**
+ * DADRC NLSEF alpha1
+ *
+ * @min 0.01
+ * @max 1.0
+ * @decimal 4
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_NA1, 0.275f);
+
+/**
+ * DADRC NLSEF alpha2
+ *
+ * @min 0.01
+ * @max 1.0
+ * @decimal 4
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_NA2, 0.275f);
+
+/**
+ * DADRC NLSEF delta
+ *
+ * @min 0.000001
+ * @decimal 6
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_NDLT, 0.01f);
+
+/**
+ * DADRC NLSEF beta1
+ *
+ * @decimal 4
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_K1, 8.0f);
+
+/**
+ * DADRC NLSEF beta2
+ *
+ * @decimal 4
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_K2, 2.0f);
+
+/**
+ * DADRC Kalman position process noise
+ *
+ * @min 0.0
+ * @decimal 8
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_QPOS, 0.000001f);
+
+/**
+ * DADRC Kalman velocity process noise
+ *
+ * @min 0.0
+ * @decimal 8
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_QVEL, 0.001f);
+
+/**
+ * DADRC Kalman measurement noise
+ *
+ * @min 0.000001
+ * @decimal 6
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_RM, 0.05f);
+
+/**
+ * DADRC max vertical force
+ *
+ * @unit N
+ * @decimal 3
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_UMAX, 60.0f);
+
+/**
+ * DADRC min vertical force
+ *
+ * @unit N
+ * @decimal 3
+ * @group Hydro Depth Control
+ */
+PARAM_DEFINE_FLOAT(HY_DADRC_UMIN, -60.0f);
 
 //非光滑反馈参数
 

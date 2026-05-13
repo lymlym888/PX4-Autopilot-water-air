@@ -39,6 +39,8 @@ px4_add_module(
 		HydroRateControl.hpp
 		CADRC.cpp
 		CADRC.h
+		DepthADRC.cpp
+		DepthADRC.h
 	DEPENDS
 		px4_work_queue
 		RateControl

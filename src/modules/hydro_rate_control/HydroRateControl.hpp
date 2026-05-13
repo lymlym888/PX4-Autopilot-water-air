@@ -78,6 +78,7 @@
 
 #include <uORB/topics/hydro_cadrc_control_message.h>
 #include "CADRC.h"
+#include "DepthADRC.h"
 
 using matrix::Eulerf;
 using matrix::Quatf;
@@ -163,6 +164,10 @@ private:
 	ADRCController _cadrc_pitch{};
 	uint8_t _prev_nav_state{vehicle_status_s::NAVIGATION_STATE_MAX};
 
+	//深度 ADRC-KF 控制器
+	DepthADRCController _depth_adrc{};
+	int32_t _prev_dc_mode{-1};
+
 
 	DEFINE_PARAMETERS(
 		(ParamFloat<px4::params::HY_AIRSPD_MAX>) _param_hy_airspd_max,		//最大空速
@@ -221,6 +226,32 @@ private:
 		(ParamFloat<px4::params::HY_DC_FF>) _param_hy_dc_ff,
 		(ParamFloat<px4::params::HY_DC_SP>) _param_hy_dc_sp,
 		(ParamFloat<px4::params::HY_DC_MAX_THR>) _param_hy_dc_max_thr,
+
+		//深度 ADRC-KF
+		(ParamFloat<px4::params::HY_DADRC_B0>) _param_hy_dadrc_b0,
+		(ParamFloat<px4::params::HY_DADRC_R>) _param_hy_dadrc_r,
+
+		(ParamFloat<px4::params::HY_DADRC_B01>) _param_hy_dadrc_b01,
+		(ParamFloat<px4::params::HY_DADRC_B02>) _param_hy_dadrc_b02,
+		(ParamFloat<px4::params::HY_DADRC_B03>) _param_hy_dadrc_b03,
+
+		(ParamFloat<px4::params::HY_DADRC_A1>) _param_hy_dadrc_a1,
+		(ParamFloat<px4::params::HY_DADRC_A2>) _param_hy_dadrc_a2,
+		(ParamFloat<px4::params::HY_DADRC_DLT>) _param_hy_dadrc_dlt,
+
+		(ParamFloat<px4::params::HY_DADRC_NA1>) _param_hy_dadrc_na1,
+		(ParamFloat<px4::params::HY_DADRC_NA2>) _param_hy_dadrc_na2,
+		(ParamFloat<px4::params::HY_DADRC_NDLT>) _param_hy_dadrc_ndlt,
+
+		(ParamFloat<px4::params::HY_DADRC_K1>) _param_hy_dadrc_k1,
+		(ParamFloat<px4::params::HY_DADRC_K2>) _param_hy_dadrc_k2,
+
+		(ParamFloat<px4::params::HY_DADRC_QPOS>) _param_hy_dadrc_qpos,
+		(ParamFloat<px4::params::HY_DADRC_QVEL>) _param_hy_dadrc_qvel,
+		(ParamFloat<px4::params::HY_DADRC_RM>) _param_hy_dadrc_rm,
+
+		(ParamFloat<px4::params::HY_DADRC_UMAX>) _param_hy_dadrc_umax,
+		(ParamFloat<px4::params::HY_DADRC_UMIN>) _param_hy_dadrc_umin,
 
 		//非光滑反馈
 		(ParamFloat<px4::params::HY_NSF_PT>) _param_hy_nsf_pt,

@@ -22,6 +22,22 @@ float32 hsmc_x3
 float32 hsmc_surface
 float32 hsmc_u
 
+#ADRC-KF
+float32 dadrc_td_x1
+float32 dadrc_td_x2
+
+float32 dadrc_kf_depth
+float32 dadrc_kf_rate
+
+float32 dadrc_eso_z1
+float32 dadrc_eso_z2
+float32 dadrc_eso_z3
+
+float32 dadrc_e1
+float32 dadrc_e2
+
+float32 dadrc_u
+float32 dadrc_u_limited
 
 float32 vertical_thrust
 float32 vertical_thrust_limited
