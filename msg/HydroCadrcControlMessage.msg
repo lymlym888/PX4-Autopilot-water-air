@@ -13,3 +13,17 @@ float32 pitch_z11
 float32 pitch_z12
 float32 pitch_z21
 float32 pitch_z22
+
+float32 ladrc_roll_rate_sp
+float32 ladrc_pitch_rate_sp
+
+float32 ladrc_roll_z1
+float32 ladrc_roll_z2
+float32 ladrc_roll_z3
+
+float32 ladrc_pitch_z1
+float32 ladrc_pitch_z2
+float32 ladrc_pitch_z3
+
+float32 ladrc_u_roll
+float32 ladrc_u_pitch

@@ -101,6 +101,27 @@ HydroRateControl::parameters_update()
 	_cadrc_pitch.setAlpha(alpha);
 
 
+	// LADRC 参数
+	_ladrc_roll.setParams(
+		_param_hy_ladrc_b0.get(),
+		_param_hy_ladrc_wc.get(),
+		_param_hy_ladrc_wo.get(),
+		_param_hy_ladrc_tau.get(),
+		_param_hy_ladrc_ulim.get(),
+		_param_hy_ladrc_ord.get(),
+		_param_hy_ladrc_gs.get()
+	);
+
+	_ladrc_pitch.setParams(
+		_param_hy_ladrc_b0.get(),
+		_param_hy_ladrc_wc.get(),
+		_param_hy_ladrc_wo.get(),
+		_param_hy_ladrc_tau.get(),
+		_param_hy_ladrc_ulim.get(),
+		_param_hy_ladrc_ord.get(),
+		_param_hy_ladrc_gs.get()
+	);
+
 	return PX4_OK;
 }
 
@@ -180,6 +201,10 @@ void HydroRateControl::Run()
 		// reset CADRC (and optionally other integrators)
 		_cadrc_roll.reset();
 		_cadrc_pitch.reset();
+
+		// reset LADRC
+		_ladrc_roll.reset();
+		_ladrc_pitch.reset();
 		}
 		// update previous nav state
 		_prev_nav_state = _vehicle_status.nav_state;
@@ -253,6 +278,75 @@ void HydroRateControl::Run()
 			const float dt_used = (tau_override > 0.f) ? tau_override : dt;
 
 			if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB
+			&& _param_hy_ladrc_en.get()) {
+
+				// LADRC：姿态角外环 P 生成目标角速度，LADRC 内环跟踪角速度
+				const float att_p = math::max(_param_hy_ladrc_ap.get(), 0.0f);
+				const float rate_lim = math::max(_param_hy_ladrc_rlim.get(), 0.01f);
+
+				float roll_rate_sp = att_p * (roll_sp - roll);
+				float pitch_rate_sp = att_p * (pitch_sp - pitch);
+
+				roll_rate_sp = math::constrain(roll_rate_sp, -rate_lim, rate_lim);
+				pitch_rate_sp = math::constrain(pitch_rate_sp, -rate_lim, rate_lim);
+
+				const float u_roll_ladrc = _ladrc_roll.update(roll_rate_sp, p, dt);
+				const float u_pitch_ladrc = _ladrc_pitch.update(pitch_rate_sp, q, dt);
+
+				float u_roll = math::constrain(u_roll_ladrc, -1.0f, 1.0f);
+				float u_pitch = math::constrain(u_pitch_ladrc, -1.0f, 1.0f);
+
+				// yaw：第一版保持原来的手动映射，不动 yaw 算法
+				float u_yaw = math::constrain(_manual_control_setpoint.yaw * _param_hy_man_y_sc.get()
+							+ _param_trim_yaw.get(), -1.f, 1.f);
+
+				// 加 trim，保持与原 CADRC 框架一致
+				u_roll = math::constrain(u_roll + _param_trim_roll.get(), -1.f, 1.f);
+				u_pitch = math::constrain(u_pitch + _param_trim_pitch.get(), -1.f, 1.f);
+
+				_hydro_torque_setpoint.xyz[0] = u_roll;
+				_hydro_torque_setpoint.xyz[1] = u_pitch;
+				_hydro_torque_setpoint.xyz[2] = u_yaw;
+
+				// 推力：STAB 下仍由遥控器给一个基准
+				_thrust_sp_norm = math::constrain((_manual_control_setpoint.throttle + 1.f) * 0.5f, 0.f, 1.f);
+
+				// 复用 hydro_cadrc_control_message 做 LADRC 日志
+				_hydro_cadrc_control_message.roll_sp = roll_sp;
+				_hydro_cadrc_control_message.pitch_sp = pitch_sp;
+
+				// 为了兼容旧日志字段，把 LADRC 的 LESO 状态也填到原 CADRC 字段里
+				_hydro_cadrc_control_message.roll_z11 = _ladrc_roll.getZ1();
+				_hydro_cadrc_control_message.roll_z12 = _ladrc_roll.getZ2();
+				_hydro_cadrc_control_message.roll_z21 = _ladrc_roll.getZ3();
+				_hydro_cadrc_control_message.roll_z22 = _ladrc_roll.getReference();
+
+				_hydro_cadrc_control_message.pitch_z11 = _ladrc_pitch.getZ1();
+				_hydro_cadrc_control_message.pitch_z12 = _ladrc_pitch.getZ2();
+				_hydro_cadrc_control_message.pitch_z21 = _ladrc_pitch.getZ3();
+				_hydro_cadrc_control_message.pitch_z22 = _ladrc_pitch.getReference();
+
+				_hydro_cadrc_control_message.u_roll = u_roll_ladrc;
+				_hydro_cadrc_control_message.u_pitch = u_pitch_ladrc;
+
+				// 新增 LADRC 专用日志字段
+				_hydro_cadrc_control_message.ladrc_roll_rate_sp = roll_rate_sp;
+				_hydro_cadrc_control_message.ladrc_pitch_rate_sp = pitch_rate_sp;
+
+				_hydro_cadrc_control_message.ladrc_roll_z1 = _ladrc_roll.getZ1();
+				_hydro_cadrc_control_message.ladrc_roll_z2 = _ladrc_roll.getZ2();
+				_hydro_cadrc_control_message.ladrc_roll_z3 = _ladrc_roll.getZ3();
+
+				_hydro_cadrc_control_message.ladrc_pitch_z1 = _ladrc_pitch.getZ1();
+				_hydro_cadrc_control_message.ladrc_pitch_z2 = _ladrc_pitch.getZ2();
+				_hydro_cadrc_control_message.ladrc_pitch_z3 = _ladrc_pitch.getZ3();
+
+				_hydro_cadrc_control_message.ladrc_u_roll = u_roll_ladrc;
+				_hydro_cadrc_control_message.ladrc_u_pitch = u_pitch_ladrc;
+
+				_hydro_cadrc_control_message_pub.publish(_hydro_cadrc_control_message);
+
+			} else if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB
 			&& _param_hy_cadrc_en.get()) {
 
 				// CADRC：P_sp, P, Wx -> Wx_p -> Uc

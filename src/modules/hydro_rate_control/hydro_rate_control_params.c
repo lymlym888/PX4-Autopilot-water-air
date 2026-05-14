@@ -47,7 +47,7 @@
  * @boolean
  * @group HY CADRC
  */
-PARAM_DEFINE_INT32(HY_CADRC_EN, 1);
+PARAM_DEFINE_INT32(HY_CADRC_EN, 0);
 
 /**
  * CADRC J0 (inertia-like parameter)
@@ -133,6 +133,113 @@ PARAM_DEFINE_FLOAT(HY_ROLL_MAX, 30.0f);
 PARAM_DEFINE_FLOAT(HY_PITCH_MAX, 20.0f);
 
 
+/**
+ * Enable LADRC in STAB mode
+ *
+ * When enabled, LADRC has higher priority than CADRC.
+ *
+ * @boolean
+ * @group HY LADRC
+ */
+PARAM_DEFINE_INT32(HY_LADRC_EN, 0);
+
+/**
+ * LADRC LESO order
+ *
+ * 2: second-order LESO
+ * 3: third-order LESO
+ *
+ * @min 2
+ * @max 3
+ * @group HY LADRC
+ */
+PARAM_DEFINE_INT32(HY_LADRC_ORD, 2);
+
+/**
+ * LADRC input gain b0
+ *
+ * The nominal gain from normalized torque command to body-rate acceleration.
+ *
+ * @min 0.0001
+ * @decimal 4
+ * @group HY LADRC
+ */
+PARAM_DEFINE_FLOAT(HY_LADRC_B0, 1.0f);
+
+/**
+ * LADRC controller bandwidth omega_c
+ *
+ * @min 0.0
+ * @decimal 3
+ * @group HY LADRC
+ */
+PARAM_DEFINE_FLOAT(HY_LADRC_WC, 4.0f);
+
+/**
+ * LADRC observer bandwidth omega_o
+ *
+ * @min 0.0
+ * @decimal 3
+ * @group HY LADRC
+ */
+PARAM_DEFINE_FLOAT(HY_LADRC_WO, 15.0f);
+
+/**
+ * LADRC reference smoothing time constant
+ *
+ * 0 disables smoothing.
+ *
+ * @unit s
+ * @min 0.0
+ * @decimal 4
+ * @group HY LADRC
+ */
+PARAM_DEFINE_FLOAT(HY_LADRC_TAU, 0.05f);
+
+/**
+ * LADRC normalized output limit
+ *
+ * The LADRC output is normalized torque command before trim.
+ *
+ * @min 0.0001
+ * @max 1.0
+ * @decimal 3
+ * @group HY LADRC
+ */
+PARAM_DEFINE_FLOAT(HY_LADRC_ULIM, 0.4f);
+
+/**
+ * LADRC outer attitude proportional gain
+ *
+ * roll_rate_sp = AP * roll_error
+ * pitch_rate_sp = AP * pitch_error
+ *
+ * @min 0.0
+ * @decimal 3
+ * @group HY LADRC
+ */
+PARAM_DEFINE_FLOAT(HY_LADRC_AP, 2.0f);
+
+/**
+ * LADRC body-rate setpoint limit
+ *
+ * @unit rad/s
+ * @min 0.01
+ * @decimal 3
+ * @group HY LADRC
+ */
+PARAM_DEFINE_FLOAT(HY_LADRC_RLIM, 0.8f);
+
+/**
+ * LADRC LESO gain scale
+ *
+ * This scales beta1, beta2 and beta3 together.
+ *
+ * @min 0.01
+ * @decimal 3
+ * @group HY LADRC
+ */
+PARAM_DEFINE_FLOAT(HY_LADRC_GS, 1.0f);
 
 
 

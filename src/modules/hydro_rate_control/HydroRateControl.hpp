@@ -78,6 +78,7 @@
 
 #include <uORB/topics/hydro_cadrc_control_message.h>
 #include "CADRC.h"
+#include "LADRC.h"
 
 using matrix::Eulerf;
 using matrix::Quatf;
@@ -161,6 +162,11 @@ private:
 	//CADRC算法部分
 	ADRCController _cadrc_roll{};
 	ADRCController _cadrc_pitch{};
+
+	//LADRC算法部分
+	LADRCController _ladrc_roll{};
+	LADRCController _ladrc_pitch{};
+
 	uint8_t _prev_nav_state{vehicle_status_s::NAVIGATION_STATE_MAX};
 
 
@@ -255,6 +261,17 @@ private:
 		(ParamFloat<px4::params::HY_ROLL_MAX>) _param_hy_roll_max,
 		(ParamFloat<px4::params::HY_PITCH_MAX>) _param_hy_pitch_max,
 
+		//LADRC
+		(ParamInt<px4::params::HY_LADRC_EN>) _param_hy_ladrc_en,
+		(ParamInt<px4::params::HY_LADRC_ORD>) _param_hy_ladrc_ord,
+		(ParamFloat<px4::params::HY_LADRC_B0>) _param_hy_ladrc_b0,
+		(ParamFloat<px4::params::HY_LADRC_WC>) _param_hy_ladrc_wc,
+		(ParamFloat<px4::params::HY_LADRC_WO>) _param_hy_ladrc_wo,
+		(ParamFloat<px4::params::HY_LADRC_TAU>) _param_hy_ladrc_tau,
+		(ParamFloat<px4::params::HY_LADRC_ULIM>) _param_hy_ladrc_ulim,
+		(ParamFloat<px4::params::HY_LADRC_AP>) _param_hy_ladrc_ap,
+		(ParamFloat<px4::params::HY_LADRC_RLIM>) _param_hy_ladrc_rlim,
+		(ParamFloat<px4::params::HY_LADRC_GS>) _param_hy_ladrc_gs,
 
 
 		//引用外部参数
