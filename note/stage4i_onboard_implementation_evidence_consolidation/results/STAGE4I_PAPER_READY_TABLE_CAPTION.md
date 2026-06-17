@@ -1,0 +1,1 @@
+Table X. Consolidated onboard implementation evidence for the fixed-linear MPC shadow module on the H743/PX4 platform, including firmware integration, 50 Hz scheduled execution, real sensor-input subscription, bounded shadow-diagnostic chain, read-only CADRC/allocator base-command interface, and fail-closed safety gating with zero post-gate output under unconfirmed actuator sign.

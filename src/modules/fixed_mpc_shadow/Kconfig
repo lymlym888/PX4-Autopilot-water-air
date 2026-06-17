@@ -1,0 +1,5 @@
+menuconfig MODULES_FIXED_MPC_SHADOW
+	bool "fixed_mpc_shadow"
+	default n
+	---help---
+		Enable compile-only fixed MPC shadow diagnostics module.

@@ -1,0 +1,83 @@
+#pragma once
+#include <stdint.h>
+
+namespace fixed_mpc_shadow {
+
+struct Diagnostics {
+    uint64_t timestamp_us;
+    uint64_t loop_count;
+    float last_run_elapsed_ms;
+    uint32_t solve_time_us;
+    bool solver_success;
+    float phi_rad;
+    float p_rad_s;
+    float pitch_rad;
+    float yaw_rad;
+    float roll_deg;
+    float roll_rate_deg_s;
+    float pitch_deg;
+    float yaw_deg;
+    float delta_logged;
+    float delta_mpc_raw;
+    float delta_mpc_amplitude_limited;
+    float delta_mpc_amplitude_saturation_ratio;
+    float delta_mpc_rate_limit_reference;
+    float delta_mpc_rate_limit_delta;
+    float delta_mpc_rate_limit_max_step;
+    float delta_mpc_rate_limited;
+    float delta_mpc_rate_saturation_ratio;
+    float delta_mpc_clipped;
+    float delta_mpc_saturation_ratio;
+    float delta_mpc_shadow_correction;
+    float delta_mpc_shadow_correction_limit;
+    float delta_mpc_pre_gate;
+    float delta_mpc_post_gate;
+    float delta_rate_mpc_pre_gate;
+    float delta_rate_mpc_post_gate;
+    float attitude_age_ms;
+    float angular_velocity_age_ms;
+    float base_command_age_ms;
+    float hydro_torque_setpoint_age_ms;
+    float hydro_torque_roll_cmd;
+    float left_servo_base;
+    float right_servo_base;
+    float delta_base_A;
+    float delta_base_B;
+    float delta_mpc_shadow_correction_A;
+    float delta_mpc_shadow_correction_B;
+    float delta_candidate_shadow_A_raw;
+    float delta_candidate_shadow_A_limited;
+    float delta_candidate_shadow_A_saturation_ratio;
+    float delta_candidate_shadow_B_raw;
+    float delta_candidate_shadow_B_limited;
+    float delta_candidate_shadow_B_saturation_ratio;
+    float delta_candidate_post_gate_A;
+    float delta_candidate_post_gate_B;
+    bool delta_mpc_amplitude_saturation_flag;
+    bool delta_mpc_rate_saturation_flag;
+    bool delta_mpc_saturation_flag;
+    bool delta_mpc_shadow_correction_saturation_flag;
+    bool attitude_valid;
+    bool angular_velocity_valid;
+    bool base_command_valid;
+    bool hydro_torque_setpoint_valid;
+    bool delta_candidate_shadow_A_saturation_flag;
+    bool delta_candidate_shadow_B_saturation_flag;
+    bool safety_gate_pass;
+    bool diag_consistency_ok;
+    bool diag_error_amplitude_limit;
+    bool diag_error_legacy_fields;
+    bool diag_error_pre_gate_rate_limit;
+    bool diag_error_shadow_correction;
+    bool diag_error_post_gate;
+    bool diag_error_base_command;
+    bool diag_error_candidate_shadow;
+    bool diag_error_candidate_post_gate;
+    uint8_t fallback_reason;
+    bool actuator_sign_confirmed;
+    bool rc_enable;
+    bool active_output_allowed;
+    uint32_t diag_consistency_error_count;
+};
+
+}  // namespace fixed_mpc_shadow
