@@ -39,6 +39,7 @@ struct Diagnostics {
     float base_command_age_ms;
     float hydro_torque_setpoint_age_ms;
     float hydro_torque_roll_cmd;
+    uint8_t base_command_source;
     float left_servo_base;
     float right_servo_base;
     float delta_base_A;
@@ -78,6 +79,67 @@ struct Diagnostics {
     bool rc_enable;
     bool active_output_allowed;
     uint32_t diag_consistency_error_count;
+
+    uint8_t fmpc_mode;
+    bool fmpc_act_en;
+    bool fmpc_sign_ok;
+    float fmpc_act_lim;
+    float fmpc_g_basemin;
+    float fmpc_g_lim;
+    float fmpc_g_lowlim;
+    float fmpc_roll_max_deg;
+    float fmpc_rate_max_deg_s;
+    float fmpc_cand_max;
+    float fmpc_fcand_max;
+    bool fmpc_bnd_en;
+    float fmpc_bnd_lim;
+    float fmpc_sat_margin;
+    bool fmpc_full_en;
+    float fmpc_full_lim;
+    float fmpc_full_dur_s;
+    uint8_t fmpc_full_src;
+    bool fmpc_full_trim_en;
+
+    bool gate_base_large;
+    bool gate_direction_compatible;
+    uint8_t gate_reason;
+
+    float delta_gate_corr_A;
+    float delta_gate_corr_B;
+    float delta_gate_cand_A_raw;
+    float delta_gate_cand_A_limited;
+    float delta_gate_cand_B_raw;
+    float delta_gate_cand_B_limited;
+    float delta_gate_cand_A_ratio;
+    float delta_gate_cand_B_ratio;
+    bool delta_gate_cand_A_sat;
+    bool delta_gate_cand_B_sat;
+
+    bool active_precheck_pass;
+    float active_corr_A;
+    float active_corr_B;
+    float active_candidate_A;
+    float active_candidate_B;
+    float active_candidate_A_limited;
+    float active_candidate_B_limited;
+    bool active_applied;
+    bool active_fallback;
+    uint8_t active_fallback_reason;
+    bool bounded_requested;
+    bool bounded_allowed;
+    bool bounded_applied;
+    bool full_requested;
+    bool full_allowed;
+    bool full_applied;
+    float full_duration_s;
+    float full_trim_a;
+    float full_mpc_corr_a;
+    float full_target_a;
+    float full_target_b;
+    bool servo_saturation_flag;
+
+    float allocator_applied_corr_A;
+    float allocator_applied_corr_B;
 };
 
 }  // namespace fixed_mpc_shadow

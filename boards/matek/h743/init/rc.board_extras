@@ -14,3 +14,10 @@ atxxxx start -s
 # DShot telemetry is always on UART7
 # dshot telemetry /dev/ttyS5
 
+
+# fixed_mpc_shadow shadow-only autostart for Matek H743 experiment builds
+# This remains diagnostics-only. It does not enable active MPC output.
+if fixed_mpc_shadow status >/dev/null 2>&1
+then
+	fixed_mpc_shadow start
+fi

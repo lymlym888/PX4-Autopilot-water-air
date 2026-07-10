@@ -83,6 +83,21 @@ HydroAllocator::HydroAllocator() :
 		snprintf(buffer, sizeof(buffer), "HY_VXRT%u_ROL_R", i);
 		_param_handles.hy_vxrt_rol_r[i] = param_find(buffer);
 	}
+
+	_param_handles.fmpc_mode = param_find("FMPC_MODE");
+	_param_handles.fmpc_act_en = param_find("FMPC_ACT_EN");
+	_param_handles.fmpc_sign_ok = param_find("FMPC_SIGN_OK");
+	_param_handles.fmpc_act_lim = param_find("FMPC_ACT_LIM");
+	_param_handles.fmpc_bnd_en = param_find("FMPC_BND_EN");
+	_param_handles.fmpc_bnd_lim = param_find("FMPC_BND_LIM");
+	_param_handles.fmpc_sat_margin = param_find("FMPC_SAT_MARGIN");
+	_param_handles.fmpc_full_en = param_find("FMPC_FULL_EN");
+	_param_handles.fmpc_full_lim = param_find("FMPC_FULL_LIM");
+	_param_handles.fmpc_full_trim_en = param_find("FMPC_FTRIM_EN");
+	_param_handles.fmpc_fcand_max = param_find("FMPC_FCAND_MAX");
+	_param_handles.fmpc_g_basemin = param_find("FMPC_G_BASEMIN");
+	_param_handles.fmpc_g_lowlim = param_find("FMPC_G_LOWLIM");
+	_param_handles.fmpc_cand_max = param_find("FMPC_CAND_MAX");
 }
 
 HydroAllocator::~HydroAllocator()
@@ -125,6 +140,21 @@ HydroAllocator::parameters_update(bool force)
 		param_get(_param_handles.hy_vxrt_yaw_r[i], &_params.hy_vxrt_yaw_r[i]);
 		param_get(_param_handles.hy_vxrt_rol_r[i], &_params.hy_vxrt_rol_r[i]);
 	}
+
+	if (_param_handles.fmpc_mode != PARAM_INVALID) { param_get(_param_handles.fmpc_mode, &_params.fmpc_mode); }
+	if (_param_handles.fmpc_act_en != PARAM_INVALID) { param_get(_param_handles.fmpc_act_en, &_params.fmpc_act_en); }
+	if (_param_handles.fmpc_sign_ok != PARAM_INVALID) { param_get(_param_handles.fmpc_sign_ok, &_params.fmpc_sign_ok); }
+	if (_param_handles.fmpc_act_lim != PARAM_INVALID) { param_get(_param_handles.fmpc_act_lim, &_params.fmpc_act_lim); }
+	if (_param_handles.fmpc_bnd_en != PARAM_INVALID) { param_get(_param_handles.fmpc_bnd_en, &_params.fmpc_bnd_en); }
+	if (_param_handles.fmpc_bnd_lim != PARAM_INVALID) { param_get(_param_handles.fmpc_bnd_lim, &_params.fmpc_bnd_lim); }
+	if (_param_handles.fmpc_sat_margin != PARAM_INVALID) { param_get(_param_handles.fmpc_sat_margin, &_params.fmpc_sat_margin); }
+	if (_param_handles.fmpc_full_en != PARAM_INVALID) { param_get(_param_handles.fmpc_full_en, &_params.fmpc_full_en); }
+	if (_param_handles.fmpc_full_lim != PARAM_INVALID) { param_get(_param_handles.fmpc_full_lim, &_params.fmpc_full_lim); }
+	if (_param_handles.fmpc_full_trim_en != PARAM_INVALID) { param_get(_param_handles.fmpc_full_trim_en, &_params.fmpc_full_trim_en); }
+	if (_param_handles.fmpc_fcand_max != PARAM_INVALID) { param_get(_param_handles.fmpc_fcand_max, &_params.fmpc_fcand_max); }
+	if (_param_handles.fmpc_g_basemin != PARAM_INVALID) { param_get(_param_handles.fmpc_g_basemin, &_params.fmpc_g_basemin); }
+	if (_param_handles.fmpc_g_lowlim != PARAM_INVALID) { param_get(_param_handles.fmpc_g_lowlim, &_params.fmpc_g_lowlim); }
+	if (_param_handles.fmpc_cand_max != PARAM_INVALID) { param_get(_param_handles.fmpc_cand_max, &_params.fmpc_cand_max); }
 }
 
 //待优化求解的方程，优化求解的目标就是让这个方程等于0
@@ -633,8 +663,174 @@ void HydroAllocator::Run()
 		hydro_servos_msg.control[tilt_idx - 1] = tilt_output;
 	}
 
+	fixed_mpc_allocator_status_s fixed_mpc_allocator_status_msg{};
+	fixed_mpc_allocator_status_msg.timestamp = hrt_absolute_time();
+	fixed_mpc_allocator_status_msg.fb = true;
+	fixed_mpc_allocator_status_msg.fb_r = static_cast<uint8_t>(fixed_mpc_shadow::FallbackReason::BASE_COMMAND_INVALID);
+
+	const auto same_sign = [](float a, float b) {
+		if (fabsf(a) <= 1.0e-6f || fabsf(b) <= 1.0e-6f) {
+			return true;
+		}
+		return (a > 0.f && b > 0.f) || (a < 0.f && b < 0.f);
+	};
+
+	const int left_servo_index = _params.hy_sv_idx[0] - 1;
+	const int right_servo_index = _params.hy_sv_idx[1] - 1;
+
+	if (left_servo_index >= 0 && left_servo_index < actuator_servos_s::NUM_CONTROLS &&
+	    right_servo_index >= 0 && right_servo_index < actuator_servos_s::NUM_CONTROLS &&
+	    left_servo_index != right_servo_index) {
+		const float servo_l_base = hydro_servos_msg.control[left_servo_index];
+		const float servo_r_base = hydro_servos_msg.control[right_servo_index];
+		const float d_base_a = servo_l_base - servo_r_base;
+		const float d_base_b = servo_r_base - servo_l_base;
+		const float mean_servo = 0.5f * (servo_l_base + servo_r_base);
+
+		fixed_mpc_allocator_status_msg.base_ok = PX4_ISFINITE(servo_l_base) && PX4_ISFINITE(servo_r_base) && PX4_ISFINITE(d_base_a);
+		fixed_mpc_allocator_status_msg.base_src = static_cast<uint8_t>(fixed_mpc_shadow::FmpcBaseSource::ALLOCATOR_STATUS);
+		fixed_mpc_allocator_status_msg.srv_l_b = servo_l_base;
+		fixed_mpc_allocator_status_msg.srv_r_b = servo_r_base;
+		fixed_mpc_allocator_status_msg.d_base_a = d_base_a;
+		fixed_mpc_allocator_status_msg.d_base_b = d_base_b;
+		fixed_mpc_allocator_status_msg.srv_l_o = servo_l_base;
+		fixed_mpc_allocator_status_msg.srv_r_o = servo_r_base;
+
+		_fixed_mpc_tiny_correction_sub.update(&_fixed_mpc_tiny_correction_msg);
+		const float corr_age_ms = (_fixed_mpc_tiny_correction_msg.timestamp > 0) ? (hrt_absolute_time() - _fixed_mpc_tiny_correction_msg.timestamp) / 1000.f : 1.0e9f;
+		const bool corr_topic_fresh = corr_age_ms <= fixed_mpc_shadow::kAllocatorCorrectionTopicMaxAgeMs;
+		const bool mode_active_tiny = _params.fmpc_mode == static_cast<int32_t>(fixed_mpc_shadow::FmpcMode::ACTIVE_TINY);
+		const bool mode_active_bounded = _params.fmpc_mode == static_cast<int32_t>(fixed_mpc_shadow::FmpcMode::ACTIVE_BOUNDED_MPC);
+		const bool mode_full_roll = _params.fmpc_mode == static_cast<int32_t>(fixed_mpc_shadow::FmpcMode::FULL_ROLL_MPC_TEST);
+		const bool any_active_mode = mode_active_tiny || mode_active_bounded || mode_full_roll;
+		const bool active_param_enabled = (_params.fmpc_act_en == 1) && (_params.fmpc_sign_ok == 1);
+		const bool mode_enabled = mode_active_tiny ||
+			(mode_active_bounded && (_params.fmpc_bnd_en == 1)) ||
+			(mode_full_roll && (_params.fmpc_full_en == 1));
+		const bool corr_msg_active = any_active_mode && (_fixed_mpc_tiny_correction_msg.mode == static_cast<uint8_t>(_params.fmpc_mode));
+
+		if (fixed_mpc_allocator_status_msg.base_ok && corr_topic_fresh && any_active_mode && active_param_enabled &&
+		    mode_enabled && corr_msg_active && _fixed_mpc_tiny_correction_msg.act_allow && !_fixed_mpc_tiny_correction_msg.fb &&
+		    _fixed_mpc_tiny_correction_msg.diag_ok && _fixed_mpc_tiny_correction_msg.sen_ok && _fixed_mpc_tiny_correction_msg.base_ok) {
+			const float act_lim = math::constrain(_params.fmpc_act_lim, 0.f, fixed_mpc_shadow::kFmpcActLimHardMax);
+			const float bnd_lim = math::constrain(_params.fmpc_bnd_lim, 0.f, fixed_mpc_shadow::kFmpcBndLimHardMax);
+			const float full_lim = math::constrain(_params.fmpc_full_lim, 0.f, fixed_mpc_shadow::kFmpcFullLimHardMax);
+			const bool full_trim_en = (_params.fmpc_full_trim_en == 1);
+			const float full_cand_max = math::constrain(_params.fmpc_fcand_max,
+				fixed_mpc_shadow::kFmpcFullCandMaxHardMin,
+				fixed_mpc_shadow::kFmpcFullCandMaxHardMax);
+			const float sat_margin = math::constrain(_params.fmpc_sat_margin, 0.f, 0.2f);
+			const float abs_limit = math::max(1.f - sat_margin, 0.f);
+			float corr_a = 0.f;
+			float corr_b = 0.f;
+			float target_diff_a = d_base_a;
+			float target_diff_b = d_base_b;
+			bool allow_apply = true;
+			uint8_t reject_reason = static_cast<uint8_t>(fixed_mpc_shadow::FallbackReason::NONE);
+
+			if (mode_active_tiny) {
+				corr_a = math::constrain(_fixed_mpc_tiny_correction_msg.corr_a, -act_lim, act_lim);
+				corr_b = -corr_a;
+
+				if (fabsf(d_base_a) >= _params.fmpc_g_basemin) {
+					if (!same_sign(corr_a, d_base_a)) {
+						allow_apply = false;
+						reject_reason = static_cast<uint8_t>(fixed_mpc_shadow::FallbackReason::DIRECTION_CONFLICT);
+					}
+				} else {
+					const float low_limit = math::min(_params.fmpc_g_lowlim, act_lim);
+					corr_a = math::constrain(corr_a, -low_limit, low_limit);
+					corr_b = -corr_a;
+				}
+
+				target_diff_a = d_base_a + corr_a;
+				target_diff_b = d_base_b + corr_b;
+			}
+
+			if (mode_active_bounded) {
+				corr_a = math::constrain(_fixed_mpc_tiny_correction_msg.corr_a, -bnd_lim, bnd_lim);
+				corr_b = -corr_a;
+
+				if (fabsf(d_base_a) >= _params.fmpc_g_basemin) {
+					if (!same_sign(corr_a, d_base_a)) {
+						allow_apply = false;
+						reject_reason = static_cast<uint8_t>(fixed_mpc_shadow::FallbackReason::DIRECTION_CONFLICT);
+					}
+				} else {
+					const float low_limit = math::min(_params.fmpc_g_lowlim, bnd_lim);
+					corr_a = math::constrain(corr_a, -low_limit, low_limit);
+					corr_b = -corr_a;
+				}
+
+				target_diff_a = d_base_a + corr_a;
+				target_diff_b = d_base_b + corr_b;
+			}
+
+			if (mode_full_roll) {
+				if (full_trim_en) {
+					target_diff_a = _fixed_mpc_tiny_correction_msg.cand_a;
+					target_diff_b = _fixed_mpc_tiny_correction_msg.cand_b;
+				} else {
+					target_diff_a = math::constrain(_fixed_mpc_tiny_correction_msg.cand_a, -full_lim, full_lim);
+					target_diff_b = math::constrain(_fixed_mpc_tiny_correction_msg.cand_b, -full_lim, full_lim);
+				}
+
+				corr_a = target_diff_a - d_base_a;
+				corr_b = target_diff_b - d_base_b;
+			}
+
+			const float candidate_limit =
+				(mode_full_roll && full_trim_en) ? full_cand_max : _params.fmpc_cand_max;
+
+			if (allow_apply && (fabsf(target_diff_a) > candidate_limit || fabsf(target_diff_b) > candidate_limit)) {
+				allow_apply = false;
+				reject_reason = static_cast<uint8_t>(fixed_mpc_shadow::FallbackReason::CANDIDATE_LIMIT);
+			}
+
+			const float servo_l_candidate = mean_servo + 0.5f * target_diff_a;
+			const float servo_r_candidate = mean_servo - 0.5f * target_diff_a;
+
+			if (allow_apply && (mode_active_bounded || mode_full_roll) &&
+			    (fabsf(servo_l_candidate) > abs_limit || fabsf(servo_r_candidate) > abs_limit)) {
+				allow_apply = false;
+				reject_reason = static_cast<uint8_t>(fixed_mpc_shadow::FallbackReason::SATURATION_NO_HEADROOM);
+			}
+
+			if (allow_apply) {
+				const float servo_l_out = math::constrain(servo_l_candidate, -1.f, 1.f);
+				const float servo_r_out = math::constrain(servo_r_candidate, -1.f, 1.f);
+				hydro_servos_msg.control[left_servo_index] = servo_l_out;
+				hydro_servos_msg.control[right_servo_index] = servo_r_out;
+				fixed_mpc_allocator_status_msg.app_ca = (servo_l_out - servo_r_out) - d_base_a;
+				fixed_mpc_allocator_status_msg.app_cb = -fixed_mpc_allocator_status_msg.app_ca;
+				fixed_mpc_allocator_status_msg.srv_l_o = servo_l_out;
+				fixed_mpc_allocator_status_msg.srv_r_o = servo_r_out;
+				fixed_mpc_allocator_status_msg.act_ap = true;
+				fixed_mpc_allocator_status_msg.fb = false;
+				fixed_mpc_allocator_status_msg.fb_r = static_cast<uint8_t>(fixed_mpc_shadow::FallbackReason::NONE);
+			} else {
+				fixed_mpc_allocator_status_msg.fb = true;
+				fixed_mpc_allocator_status_msg.fb_r = reject_reason;
+			}
+		} else {
+			fixed_mpc_allocator_status_msg.fb = true;
+			if (any_active_mode && active_param_enabled && !mode_enabled) {
+				if (mode_active_bounded) {
+					fixed_mpc_allocator_status_msg.fb_r = static_cast<uint8_t>(fixed_mpc_shadow::FallbackReason::BOUNDED_ACTIVE_DISABLED);
+				} else if (mode_full_roll) {
+					fixed_mpc_allocator_status_msg.fb_r = static_cast<uint8_t>(fixed_mpc_shadow::FallbackReason::FULL_ACTIVE_DISABLED);
+				} else {
+					fixed_mpc_allocator_status_msg.fb_r = static_cast<uint8_t>(fixed_mpc_shadow::FallbackReason::PARAM_ACTIVE_DISABLED);
+				}
+			} else {
+				fixed_mpc_allocator_status_msg.fb_r = _fixed_mpc_tiny_correction_msg.fb_r;
+			}
+		}
+	}
+
 	_hydro_motors_pub.publish(hydro_motors_msg);
 	_hydro_servos_pub.publish(hydro_servos_msg);
+	_fixed_mpc_allocator_status_pub.publish(fixed_mpc_allocator_status_msg);
 
 	hydro_allocate_message_msg.timestamp = hrt_absolute_time();
 	_hydro_allocate_message_pub.publish(hydro_allocate_message_msg);

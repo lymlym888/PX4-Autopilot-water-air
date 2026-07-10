@@ -57,6 +57,10 @@ void LoggedTopics::add_default_topics()
 	add_topic("hydro_allocate_message");
 	add_topic("hydro_torque_setpoint");
 	add_topic("hydro_thrust_setpoint");
+	add_optional_topic("hydro_servos", 20);
+	add_optional_topic("fixed_mpc_shadow_status", 20);
+	add_optional_topic("fixed_mpc_tiny_correction", 20);
+	add_optional_topic("fixed_mpc_allocator_status", 20);
 	add_topic("hydro_depth_control_message");
 	add_topic("hydro_tilt_message");
 

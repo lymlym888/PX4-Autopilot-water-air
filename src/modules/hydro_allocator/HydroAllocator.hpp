@@ -52,10 +52,14 @@
 #include <uORB/topics/hydro_allocate_message.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/hydro_tilt_message.h>
+#include <uORB/topics/fixed_mpc_tiny_correction.h>
+#include <uORB/topics/fixed_mpc_allocator_status.h>
 
 #include <drivers/drv_hrt.h>
 
 #include <lib/matrix/matrix/math.hpp>
+
+#include "../fixed_mpc_shadow/FixedMpcInterface.hpp"
 
 using namespace time_literals;
 using namespace matrix;
@@ -86,7 +90,7 @@ private:
 
 	struct NfParams {
 		float KL;
-		float v2; // v**2
+		float v2;
 		float alpha0;
 		float Fx;
 		float Fz;
@@ -99,26 +103,29 @@ private:
 
 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
 
-	uORB::SubscriptionCallbackWorkItem 	_hydro_torque_setpoint_sub{this, ORB_ID(hydro_torque_setpoint)};
-	uORB::SubscriptionCallbackWorkItem 	_hydro_thrust_setpoint_sub{this, ORB_ID(hydro_thrust_setpoint)};
+	uORB::SubscriptionCallbackWorkItem _hydro_torque_setpoint_sub{this, ORB_ID(hydro_torque_setpoint)};
+	uORB::SubscriptionCallbackWorkItem _hydro_thrust_setpoint_sub{this, ORB_ID(hydro_thrust_setpoint)};
 
 	uORB::Subscription _manual_control_setpoint_sub{ORB_ID(manual_control_setpoint)};
 	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
 	uORB::Subscription _debug_vect_sub{ORB_ID(debug_vect)};
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
+	uORB::Subscription _fixed_mpc_tiny_correction_sub{ORB_ID(fixed_mpc_tiny_correction)};
 
-	vehicle_torque_setpoint_s		_hydro_torque_setpoint_msg{0};
-	vehicle_thrust_setpoint_s		_hydro_thrust_setpoint_msg{0};
+	vehicle_torque_setpoint_s _hydro_torque_setpoint_msg{0};
+	vehicle_thrust_setpoint_s _hydro_thrust_setpoint_msg{0};
 
-	vehicle_status_s			_vehicle_status{};
+	vehicle_status_s _vehicle_status{};
 
-	manual_control_setpoint_s		_manual_control_setpoint{0};
-	vehicle_attitude_s			_vehicle_attitude{0};
+	manual_control_setpoint_s _manual_control_setpoint{0};
+	vehicle_attitude_s _vehicle_attitude{0};
+	fixed_mpc_tiny_correction_s _fixed_mpc_tiny_correction_msg{};
 
-	uORB::Publication<actuator_motors_s>	_hydro_motors_pub{ORB_ID(hydro_motors)};
-	uORB::Publication<actuator_servos_s>	_hydro_servos_pub{ORB_ID(hydro_servos)};
-	uORB::Publication<hydro_allocate_message_s>	_hydro_allocate_message_pub{ORB_ID(hydro_allocate_message)};
-	uORB::Publication<hydro_tilt_message_s>	_hydro_tilt_message_pub{ORB_ID(hydro_tilt_message)};
+	uORB::Publication<actuator_motors_s> _hydro_motors_pub{ORB_ID(hydro_motors)};
+	uORB::Publication<actuator_servos_s> _hydro_servos_pub{ORB_ID(hydro_servos)};
+	uORB::Publication<hydro_allocate_message_s> _hydro_allocate_message_pub{ORB_ID(hydro_allocate_message)};
+	uORB::Publication<hydro_tilt_message_s> _hydro_tilt_message_pub{ORB_ID(hydro_tilt_message)};
+	uORB::Publication<fixed_mpc_allocator_status_s> _fixed_mpc_allocator_status_pub{ORB_ID(fixed_mpc_allocator_status)};
 
 	perf_counter_t _loop_perf;
 
@@ -133,6 +140,20 @@ private:
 		param_t hy_vxrt_pit_r[2];
 		param_t hy_vxrt_yaw_r[2];
 		param_t hy_vxrt_rol_r[2];
+		param_t fmpc_mode;
+		param_t fmpc_act_en;
+		param_t fmpc_sign_ok;
+		param_t fmpc_act_lim;
+		param_t fmpc_bnd_en;
+		param_t fmpc_bnd_lim;
+		param_t fmpc_sat_margin;
+		param_t fmpc_full_en;
+		param_t fmpc_full_lim;
+		param_t fmpc_full_trim_en;
+		param_t fmpc_fcand_max;
+		param_t fmpc_g_basemin;
+		param_t fmpc_g_lowlim;
+		param_t fmpc_cand_max;
 	};
 
 	struct Params {
@@ -144,6 +165,20 @@ private:
 		float hy_vxrt_pit_r[2];
 		float hy_vxrt_yaw_r[2];
 		float hy_vxrt_rol_r[2];
+		int32_t fmpc_mode;
+		int32_t fmpc_act_en;
+		int32_t fmpc_sign_ok;
+		float fmpc_act_lim;
+		int32_t fmpc_bnd_en;
+		float fmpc_bnd_lim;
+		float fmpc_sat_margin;
+		int32_t fmpc_full_en;
+		float fmpc_full_lim;
+		int32_t fmpc_full_trim_en;
+		float fmpc_fcand_max;
+		float fmpc_g_basemin;
+		float fmpc_g_lowlim;
+		float fmpc_cand_max;
 	};
 
 	ParamHandles _param_handles{};

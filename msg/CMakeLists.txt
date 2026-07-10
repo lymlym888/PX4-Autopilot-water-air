@@ -254,6 +254,9 @@ set(msg_files
 	YawEstimatorStatus.msg
 	DepthFusion.msg
 	DepthEstimated.msg
+	FixedMpcShadowStatus.msg
+	FixedMpcTinyCorrection.msg
+	FixedMpcAllocatorStatus.msg
 	HydroAllocateMessage.msg
 	HydroDepthControlMessage.msg
 	HydroTiltMessage.msg

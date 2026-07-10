@@ -5,10 +5,9 @@ px4_add_module(
 		fixed_mpc_shadow_main.cpp
 		FixedLinearMPC.cpp
 		FixedLinearMPC.hpp
-		SafetyGate.cpp
-		SafetyGate.hpp
 		FixedMPCDiagnostics.hpp
 		FixedMPCParams.hpp
+		FixedMpcInterface.hpp
 	DEPENDS
 		px4_work_queue
 	)
