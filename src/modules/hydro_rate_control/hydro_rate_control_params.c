@@ -132,6 +132,424 @@ PARAM_DEFINE_FLOAT(HY_ROLL_MAX, 30.0f);
  */
 PARAM_DEFINE_FLOAT(HY_PITCH_MAX, 20.0f);
 
+/**
+ * Safe-roll operating mode
+ *
+ * @value 0 Legacy CADRC
+ * @value 1 Nominal control
+ * @value 2 WC fixed DE-HOCBF
+ * @value 3 Adaptive safe control
+ * @value 4 No-allocation ablation
+ * @min 0
+ * @max 4
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_INT32(HY_SR_MODE, 0);
+
+/**
+ * Safe-roll output enable
+ *
+ * @value 0 Legacy only
+ * @value 1 Enable modes 1-3
+ * @value 2 Enable modes 1-4
+ * @min 0
+ * @max 2
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_INT32(HY_SR_ENABLE, 0);
+
+/**
+ * Safe-roll field continuous-running policy
+ *
+ * This parameter is accepted by the controller only while HY_SR_MODE is 0.
+ * Strict mode retains permanent fallback for prolonged finite allocator failure.
+ * Field mode treats bounded finite physical infeasibility as a logged degradation.
+ *
+ * @value 0 Strict mode
+ * @value 1 Field continuous-running mode
+ * @min 0
+ * @max 1
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_INT32(HY_SR_FIELD, 0);
+
+/**
+ * Calculate selected controller without driving its output
+ *
+ * @value 0 Selected controller drives output
+ * @value 1 Selected controller is shadowed by legacy
+ * @min 0
+ * @max 1
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_INT32(HY_SR_SHADOW, 0);
+
+/**
+ * Numeric experiment identifier
+ *
+ * @min 0
+ * @max 65535
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_INT32(HY_SR_TRIAL, 0);
+
+/**
+ * Controller transition blend time
+ *
+ * @unit s
+ * @min 0.05
+ * @max 2.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_BLEND, 0.30f);
+
+/**
+ * Safe-roll reset request identifier
+ *
+ * Incrementing this resets only the new controller state.
+ *
+ * @min 0
+ * @max 2147483647
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_INT32(HY_SR_RST_ID, 0);
+
+/**
+ * Safe-roll commanded hydrofoil angle limit
+ *
+ * This limits commanded/predicted state only and is not position feedback.
+ * It is only used by modes 1 through 4.
+ *
+ * @unit deg
+ * @min 1.0
+ * @max 65.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_DMAX, 35.0f);
+
+/**
+ * Safe-roll commanded hydrofoil rate limit
+ *
+ * This limits commanded/predicted state only and is not position feedback.
+ * It is only used by modes 1 through 4.
+ *
+ * @unit deg/s
+ * @min 1.0
+ * @max 720.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_DRATE, 90.0f);
+
+/**
+ * Safe-roll allocator local-model remainder margin
+ *
+ * This margin applies to commanded/predicted hydrofoil angle.
+ *
+ * @unit deg
+ * @min 0.0
+ * @max 2.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_DREM, 0.05f);
+
+/**
+ * Safe-roll physical mapping confirmation
+ *
+ * Set to 1 manually only after physical left/right and command sign have been
+ * verified on a restrained, propulsion-disabled bench. The software never
+ * changes this parameter.
+ *
+ * @boolean
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_INT32(HY_SR_MAP_OK, 0);
+
+/**
+ * Safe-roll Servo4/5 ownership confirmation
+ *
+ * Set to 1 manually only after generic trim/effectiveness and hydrofoil output
+ * ownership have been reviewed and the physical neutral has been verified.
+ * The software never changes this parameter.
+ *
+ * @boolean
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_INT32(HY_SR_OWN_OK, 0);
+
+/**
+ * Reference-filter natural frequency
+ *
+ * @unit rad/s
+ * @min 0.5
+ * @max 20.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_RFWN, 4.0f);
+
+/**
+ * Reference-filter damping ratio
+ *
+ * @min 0.5
+ * @max 2.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_RFZ, 1.0f);
+
+/**
+ * Reference-filter rate limit
+ *
+ * @unit deg/s
+ * @min 10
+ * @max 360
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_RFPMAX, 120.0f);
+
+/**
+ * Reference-filter acceleration limit
+ *
+ * @unit deg/s^2
+ * @min 50
+ * @max 2000
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_RFAMAX, 500.0f);
+
+/**
+ * Roll-rate plant coefficient
+ *
+ * @unit 1/s
+ * @min -20.0
+ * @max 20.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_A0, -0.50f);
+
+/**
+ * Nominal roll control effectiveness
+ *
+ * @min 0.1
+ * @max 100.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_B0, 10.1746f);
+
+/**
+ * Minimum roll control effectiveness
+ *
+ * @min 0.1
+ * @max 100.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_BMIN, 6.50f);
+
+/**
+ * Maximum roll control effectiveness
+ *
+ * @min 0.1
+ * @max 100.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_BMAX, 13.00f);
+
+/**
+ * Symmetric safe roll boundary
+ *
+ * @unit deg
+ * @min 10
+ * @max 35
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_PHIS, 20.0f);
+
+/**
+ * Virtual roll command magnitude limit
+ *
+ * @min 0.1
+ * @max 1.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_UMAX, 1.0f);
+
+/**
+ * Nominal 2.5 ms maximum virtual-input increment
+ *
+ * @min 0.0001
+ * @max 0.2
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_DUMAX, 0.009f);
+
+/**
+ * Innovation filter forgetting factor
+ *
+ * @min 0.8
+ * @max 1.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_FLAM, 0.982f);
+
+/**
+ * Point effectiveness adaptation gain
+ *
+ * @min 0.0
+ * @max 1.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_GB, 0.055f);
+
+/**
+ * Effectiveness adaptation denominator regularizer
+ *
+ * @min 0.000001
+ * @max 10.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_EPSB, 0.010f);
+
+/**
+ * Minimum filtered input excitation
+ *
+ * @min 0.0
+ * @max 1.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_UFMIN, 0.015f);
+
+/**
+ * Point-estimator innovation gate
+ *
+ * @min 0.001
+ * @max 100.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_IGATE, 0.75f);
+
+/**
+ * Maximum point effectiveness update per sample
+ *
+ * @min 0.0
+ * @max 1.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_BDMAX, 0.006f);
+
+/**
+ * Disturbance estimator gain
+ *
+ * @min 0.001
+ * @max 1.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_LD, 0.18f);
+
+/**
+ * Initial disturbance-error radius
+ *
+ * @min 0.0
+ * @max 100.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_RD0, 0.06f);
+
+/**
+ * Disturbance variation bound per nominal 2.5 ms
+ *
+ * @min 0.0
+ * @max 1.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_DDB, 0.0060f);
+
+/**
+ * Effectiveness variation bound per nominal 2.5 ms
+ *
+ * @min 0.0
+ * @max 1.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_DBB, 0.00405f);
+
+/**
+ * Minimum incremental input excitation
+ *
+ * @min 0.0
+ * @max 2.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_IUMIN, 0.018f);
+
+/**
+ * Incremental certificate residual margin
+ *
+ * @min 0.0
+ * @max 10.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_IRES, 0.0015f);
+
+/**
+ * Incremental consistency gate factor
+ *
+ * @min 1.0
+ * @max 100.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_IGFAC, 1.25f);
+
+/**
+ * Initial effectiveness interval radius
+ *
+ * @min 0.0
+ * @max 100.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_RB0, 0.35f);
+
+/**
+ * Nominal roll-angle error gain
+ *
+ * @min 0.0
+ * @max 1000.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_K1, 15.0f);
+
+/**
+ * Nominal roll-rate error gain
+ *
+ * @min 0.0
+ * @max 1000.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_K2, 7.0f);
+
+/**
+ * First DE-HOCBF gain
+ *
+ * @min 0.000001
+ * @max 10.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_G1, 0.011f);
+
+/**
+ * Second DE-HOCBF gain
+ *
+ * @min 0.000001
+ * @max 10.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_G2, 0.011f);
+
+/**
+ * Robust control effectiveness denominator floor
+ *
+ * @min 0.01
+ * @max 100.0
+ * @group HAAR Safe Roll
+ */
+PARAM_DEFINE_FLOAT(HY_SR_BFLOOR, 0.50f);
 
 
 
@@ -761,5 +1179,3 @@ PARAM_DEFINE_FLOAT(HY_HSMC_IMIN, -20.0f);
  */
 PARAM_DEFINE_FLOAT(HY_MAN_RATIO, 0.0f);
 //手动模式下纵向力的比率
-
-

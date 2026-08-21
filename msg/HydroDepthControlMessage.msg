@@ -1,4 +1,9 @@
 uint64 timestamp                # time since system start (microseconds)
+uint64 timestamp_sample
+
+int32 depth_controller_mode
+bool depth_controller_enabled
+bool depth_controller_output_finite
 
 float32 depth
 float32 depth_rate
@@ -25,4 +30,3 @@ float32 hsmc_u
 
 float32 vertical_thrust
 float32 vertical_thrust_limited
-

@@ -61,6 +61,13 @@ void LoggedTopics::add_default_topics()
 	add_topic("hydro_tilt_message");
 
 	add_topic("hydro_cadrc_control_message", 0);
+	add_topic("haar_safe_roll_status", 0);
+	add_topic("haar_safe_roll_estimator_status", 0);
+	add_topic("haar_safe_roll_field_status", 0);
+	add_topic("haar_safe_roll_fault_snapshot", 0);
+	add_topic("haar_safe_roll_gate_status", 0);
+	add_topic("haar_depth_control_status", 0);
+	add_topic("haar_depth_allocator_status", 0);
 
 	// USER TOPIC END
 	add_topic("action_request");

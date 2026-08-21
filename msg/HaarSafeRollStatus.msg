@@ -1,0 +1,92 @@
+uint64 timestamp
+uint64 timestamp_sample
+
+uint32 FAULT_PHYSICAL_MAPPING_UNVERIFIED = 4096
+uint32 FAULT_SERVO_OWNERSHIP_UNVERIFIED = 8192
+uint32 FAULT_GENERIC_HYDRO_CONFLICT = 16384
+
+uint8 requested_mode
+uint8 active_mode
+uint32 reset_count
+uint32 fault_flags
+uint32 first_fault_code
+uint32 execution_stage_mask
+uint16 allocator_valid_streak
+uint16 allocator_invalid_streak
+uint16 activation_required_streak
+bool activation_pending
+bool temporary_fallback_active
+bool healthy
+bool fallback_active
+
+float32 dt_raw
+float32 dt_used
+
+float32 manual_roll
+float32 phi_sp
+float32 phi
+float32 p
+
+float32 u_legacy
+float32 u_nominal
+float32 u_selected
+float32 u_effective_model
+
+bool foil_position_feedback_available
+bool u_effective_is_model_based
+
+float32 delta_l_commanded
+float32 delta_r_commanded
+float32 thrust_l_commanded
+float32 thrust_r_commanded
+
+float32 generic_servo4
+float32 generic_servo5
+float32 hydro_servo4
+float32 hydro_servo5
+float32 final_servo4
+float32 final_servo5
+
+bool allocator_valid
+bool allocator_converged
+bool allocator_bounded
+float32 allocator_residual
+uint16 allocator_iterations
+uint32 allocator_saturation_mask
+
+bool foil_gate_enabled
+int32 foil_aux_parameter
+float32 foil_aux_value
+float32 foil_threshold_parameter
+int32 allocate_mode_parameter
+float32 wing_max_angle_parameter
+
+int8 logical_left_servo_index
+int8 logical_right_servo_index
+bool logical_mapping_matches_expected
+bool physical_left_right_mapping_verified
+bool physical_mapping_verified
+bool servo_ownership_verified
+bool logical_mapping_valid
+bool safe_roll_hardware_ready
+bool generic_hydro_contribution_conflict
+bool generic_hydro_final_consistent
+
+uint32 cycle_time_us
+
+uint8 requested_code
+uint8 active_code
+uint16 trial_id
+uint32 configuration_crc32
+bool shadow_active
+bool output_enabled
+
+float32 delta_left_commanded
+float32 delta_right_commanded
+float32 foil_rate_left_commanded
+float32 foil_rate_right_commanded
+bool candidate_valid
+bool estimator_ready
+bool certificate_ready
+bool certificate_warmup
+bool allocation_interval_degraded

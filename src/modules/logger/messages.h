@@ -116,7 +116,9 @@ struct ulog_message_format_s {
 	uint16_t msg_size; ///< size of message - ULOG_MSG_HEADER_LEN
 	uint8_t msg_type = static_cast<uint8_t>(ULogMessageType::FORMAT);
 
-	char format[1600];
+	// Keep enough room for the complete HAAR SafeRoll status definition.
+	// The logger compile-time assertion still verifies this against every uORB topic.
+	char format[2010];
 };
 
 /**

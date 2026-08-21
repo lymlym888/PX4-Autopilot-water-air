@@ -1,0 +1,63 @@
+uint64 timestamp
+uint64 timestamp_sample
+
+uint8 SUPPRESSION_NONE = 0
+uint8 SUPPRESSION_CONTROLLER_DISABLED = 1
+uint8 SUPPRESSION_CONTROLLER_NONFINITE = 2
+uint8 SUPPRESSION_ALLOCATOR_INVALID = 3
+uint8 SUPPRESSION_FOIL_GATE = 4
+uint8 SUPPRESSION_ALLOCATION_SATURATION = 5
+uint8 SUPPRESSION_FINAL_SATURATION = 6
+uint8 SUPPRESSION_BOUNDED_BEST_FEASIBLE = 7
+
+uint8 requested_code
+uint8 active_code
+int32 depth_controller_mode
+
+float32 depth_reference
+float32 measured_depth
+float32 depth_error
+float32 original_depth_controller_output
+bool depth_controller_enabled
+bool depth_controller_output_finite
+
+float32 pitch_reference
+float32 measured_pitch
+float32 u_theta
+float32 command_force_x
+float32 command_force_z
+
+float32 requested_symmetric_foil_component
+float32 realized_symmetric_foil_component
+float32 safe_roll_differential_component
+float32 final_delta_left
+float32 final_delta_right
+
+bool tail_elevator_available
+float32 tail_elevator_requested
+float32 tail_elevator_final
+
+bool allocator_valid
+bool allocator_converged
+bool allocator_finite
+bool allocator_bounded
+float32 allocator_residual
+uint16 allocator_iterations
+uint32 allocator_saturation_mask
+float32 speed_squared
+uint8 speed_source
+bool speed_context_stale
+bool foil_gate_enabled
+float32 requested_force_z
+float32 realized_force_z
+float32 requested_differential_foil_component
+float32 realized_differential_foil_component
+float32 last_feasible_symmetric_foil_component
+float32 last_feasible_differential_foil_component
+bool full_best_feasible_solution_used
+bool best_feasible_rate_limited
+bool depth_degradation_active
+uint64 depth_degradation_cumulative_time_us
+bool depth_command_suppressed
+bool depth_command_limited
+uint8 suppression_reason

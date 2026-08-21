@@ -77,7 +77,14 @@
 #include <uORB/topics/hydro_depth_control_message.h>
 
 #include <uORB/topics/hydro_cadrc_control_message.h>
+#include <uORB/topics/hydro_allocate_message.h>
+#include <uORB/topics/haar_safe_roll_status.h>
+#include <uORB/topics/haar_safe_roll_estimator_status.h>
+#include <uORB/topics/haar_safe_roll_field_status.h>
+#include <uORB/topics/haar_safe_roll_fault_snapshot.h>
+#include <uORB/topics/haar_safe_roll_gate_status.h>
 #include "CADRC.h"
+#include "SafeRollController.hpp"
 
 using matrix::Eulerf;
 using matrix::Quatf;
@@ -121,6 +128,8 @@ private:
 	uORB::Subscription _debug_vect_sub{ORB_ID(debug_vect)};
 	uORB::Subscription _vehicle_air_data_sub{ORB_ID(vehicle_air_data)};
 	uORB::Subscription _depth_estimated_sub{ORB_ID(depth_estimated)};
+	uORB::Subscription _hydro_allocate_message_sub{ORB_ID(hydro_allocate_message)};
+	uORB::Subscription _haar_safe_roll_status_sub{ORB_ID(haar_safe_roll_status)};
 
 	uORB::Publication<vehicle_rates_setpoint_s>	_rate_sp_pub{ORB_ID(hydro_rates_setpoint)};
 	uORB::Publication<vehicle_torque_setpoint_s>	_hydro_torque_setpoint_pub{ORB_ID(hydro_torque_setpoint)};
@@ -128,6 +137,14 @@ private:
 	uORB::Publication<hydro_depth_control_message_s>	_hydro_depth_control_message_pub{ORB_ID(hydro_depth_control_message)};
 
 	uORB::Publication<hydro_cadrc_control_message_s>	_hydro_cadrc_control_message_pub{ORB_ID(hydro_cadrc_control_message)};
+	uORB::Publication<haar_safe_roll_estimator_status_s> _haar_safe_roll_estimator_status_pub{
+		ORB_ID(haar_safe_roll_estimator_status)};
+	uORB::Publication<haar_safe_roll_field_status_s> _haar_safe_roll_field_status_pub{
+		ORB_ID(haar_safe_roll_field_status)};
+	uORB::Publication<haar_safe_roll_fault_snapshot_s> _haar_safe_roll_fault_snapshot_pub{
+		ORB_ID(haar_safe_roll_fault_snapshot)};
+	uORB::Publication<haar_safe_roll_gate_status_s> _haar_safe_roll_gate_status_pub{
+		ORB_ID(haar_safe_roll_gate_status)};
 
 	manual_control_setpoint_s		_manual_control_setpoint{0};
 	vehicle_rates_setpoint_s		_rates_sp{};
@@ -141,6 +158,8 @@ private:
 	hydro_depth_control_message_s		_hydro_depth_control_message{};
 
 	hydro_cadrc_control_message_s		_hydro_cadrc_control_message{};
+	hydro_allocate_message_s		_hydro_allocate_message{};
+	haar_safe_roll_status_s		_haar_safe_roll_status{};
 
 	//水翼部分的setpoint
 	vehicle_thrust_setpoint_s		_hydro_thrust_setpoint{};
@@ -161,7 +180,13 @@ private:
 	//CADRC算法部分
 	ADRCController _cadrc_roll{};
 	ADRCController _cadrc_pitch{};
+	SafeRollController _safe_roll_controller{};
 	uint8_t _prev_nav_state{vehicle_status_s::NAVIGATION_STATE_MAX};
+	uint8_t _previous_safe_roll_requested_mode{0};
+	uint32_t _previous_safe_roll_first_fault_code{0};
+	uint32_t _first_fault_cycle_time_us{0};
+	bool _safe_roll_field_initialized{false};
+	bool _safe_roll_field_effective{false};
 
 
 	DEFINE_PARAMETERS(
@@ -253,7 +278,49 @@ private:
 		(ParamFloat<px4::params::HY_CADRC_TAU>) _param_hy_cadrc_tau,
 		(ParamFloat<px4::params::HY_CADRC_U_SCALE>) _param_hy_cadrc_u_scale,
 		(ParamFloat<px4::params::HY_ROLL_MAX>) _param_hy_roll_max,
-		(ParamFloat<px4::params::HY_PITCH_MAX>) _param_hy_pitch_max,
+			(ParamFloat<px4::params::HY_PITCH_MAX>) _param_hy_pitch_max,
+			(ParamInt<px4::params::HY_SR_MODE>) _param_hy_sr_mode,
+			(ParamInt<px4::params::HY_SR_ENABLE>) _param_hy_sr_enable,
+			(ParamInt<px4::params::HY_SR_FIELD>) _param_hy_sr_field,
+			(ParamInt<px4::params::HY_SR_SHADOW>) _param_hy_sr_shadow,
+			(ParamInt<px4::params::HY_SR_TRIAL>) _param_hy_sr_trial,
+			(ParamFloat<px4::params::HY_SR_BLEND>) _param_hy_sr_blend,
+			(ParamInt<px4::params::HY_SR_RST_ID>) _param_hy_sr_rst_id,
+			(ParamFloat<px4::params::HY_SR_DMAX>) _param_hy_sr_dmax,
+			(ParamFloat<px4::params::HY_SR_DRATE>) _param_hy_sr_drate,
+			(ParamFloat<px4::params::HY_SR_DREM>) _param_hy_sr_drem,
+			(ParamInt<px4::params::HY_SR_MAP_OK>) _param_hy_sr_map_ok,
+			(ParamInt<px4::params::HY_SR_OWN_OK>) _param_hy_sr_own_ok,
+			(ParamFloat<px4::params::HY_SR_RFWN>) _param_hy_sr_rfwn,
+			(ParamFloat<px4::params::HY_SR_RFZ>) _param_hy_sr_rfz,
+			(ParamFloat<px4::params::HY_SR_RFPMAX>) _param_hy_sr_rfpmax,
+			(ParamFloat<px4::params::HY_SR_RFAMAX>) _param_hy_sr_rfamax,
+			(ParamFloat<px4::params::HY_SR_A0>) _param_hy_sr_a0,
+			(ParamFloat<px4::params::HY_SR_B0>) _param_hy_sr_b0,
+			(ParamFloat<px4::params::HY_SR_BMIN>) _param_hy_sr_bmin,
+			(ParamFloat<px4::params::HY_SR_BMAX>) _param_hy_sr_bmax,
+			(ParamFloat<px4::params::HY_SR_PHIS>) _param_hy_sr_phis,
+			(ParamFloat<px4::params::HY_SR_UMAX>) _param_hy_sr_umax,
+			(ParamFloat<px4::params::HY_SR_DUMAX>) _param_hy_sr_dumax,
+			(ParamFloat<px4::params::HY_SR_FLAM>) _param_hy_sr_flam,
+			(ParamFloat<px4::params::HY_SR_GB>) _param_hy_sr_gb,
+			(ParamFloat<px4::params::HY_SR_EPSB>) _param_hy_sr_epsb,
+			(ParamFloat<px4::params::HY_SR_UFMIN>) _param_hy_sr_ufmin,
+			(ParamFloat<px4::params::HY_SR_IGATE>) _param_hy_sr_igate,
+			(ParamFloat<px4::params::HY_SR_BDMAX>) _param_hy_sr_bdmax,
+			(ParamFloat<px4::params::HY_SR_LD>) _param_hy_sr_ld,
+			(ParamFloat<px4::params::HY_SR_RD0>) _param_hy_sr_rd0,
+			(ParamFloat<px4::params::HY_SR_DDB>) _param_hy_sr_ddb,
+			(ParamFloat<px4::params::HY_SR_DBB>) _param_hy_sr_dbb,
+			(ParamFloat<px4::params::HY_SR_IUMIN>) _param_hy_sr_iumin,
+			(ParamFloat<px4::params::HY_SR_IRES>) _param_hy_sr_ires,
+			(ParamFloat<px4::params::HY_SR_IGFAC>) _param_hy_sr_igfac,
+			(ParamFloat<px4::params::HY_SR_RB0>) _param_hy_sr_rb0,
+			(ParamFloat<px4::params::HY_SR_K1>) _param_hy_sr_k1,
+			(ParamFloat<px4::params::HY_SR_K2>) _param_hy_sr_k2,
+			(ParamFloat<px4::params::HY_SR_G1>) _param_hy_sr_g1,
+			(ParamFloat<px4::params::HY_SR_G2>) _param_hy_sr_g2,
+			(ParamFloat<px4::params::HY_SR_BFLOOR>) _param_hy_sr_bfloor,
 
 
 

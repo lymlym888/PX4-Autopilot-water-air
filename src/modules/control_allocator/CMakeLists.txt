@@ -49,6 +49,7 @@ px4_add_module(
 		module.yaml
 	DEPENDS
 		mathlib
+		HydrofoilAllocationModel
 		ActuatorEffectiveness
 		ControlAllocation
 		px4_work_queue

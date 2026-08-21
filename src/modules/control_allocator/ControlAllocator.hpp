@@ -76,6 +76,12 @@
 #include <uORB/topics/vehicle_control_mode.h>
 #include <uORB/topics/vehicle_torque_setpoint.h>
 #include <uORB/topics/vehicle_thrust_setpoint.h>
+#include <uORB/topics/hydro_allocate_message.h>
+#include <uORB/topics/hydro_cadrc_control_message.h>
+#include <uORB/topics/hydro_depth_control_message.h>
+#include <uORB/topics/haar_depth_control_status.h>
+#include <uORB/topics/haar_depth_allocator_status.h>
+#include <uORB/topics/haar_safe_roll_status.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/failure_detector_status.h>
 #include <uORB/topics/manual_control_setpoint.h>
@@ -181,6 +187,9 @@ private:
 
 	uORB::Subscription _hydro_motors_sub{ORB_ID(hydro_motors)};
 	uORB::Subscription _hydro_servos_sub{ORB_ID(hydro_servos)};
+	uORB::Subscription _hydro_allocate_message_sub{ORB_ID(hydro_allocate_message)};
+	uORB::Subscription _hydro_cadrc_control_message_sub{ORB_ID(hydro_cadrc_control_message)};
+	uORB::Subscription _hydro_depth_control_message_sub{ORB_ID(hydro_depth_control_message)};
 
 	uORB::Subscription _manual_control_setpoint_sub{ORB_ID(manual_control_setpoint)};
 
@@ -189,6 +198,10 @@ private:
 
 	uORB::Publication<actuator_motors_s>	_actuator_motors_pub{ORB_ID(actuator_motors)};
 	uORB::Publication<actuator_servos_s>	_actuator_servos_pub{ORB_ID(actuator_servos)};
+	uORB::Publication<haar_safe_roll_status_s> _haar_safe_roll_status_pub{ORB_ID(haar_safe_roll_status)};
+	uORB::Publication<haar_depth_control_status_s> _haar_depth_control_status_pub{ORB_ID(haar_depth_control_status)};
+	uORB::Subscription _haar_depth_allocator_status_sub{ORB_ID(haar_depth_allocator_status)};
+	haar_depth_allocator_status_s _haar_depth_allocator_status{};
 	uORB::Publication<actuator_servos_trim_s>	_actuator_servos_trim_pub{ORB_ID(actuator_servos_trim)};
 
 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
@@ -199,6 +212,11 @@ private:
 
 	actuator_motors_s _hydro_motors{0};
 	actuator_servos_s _hydro_servos{0};
+	hydro_allocate_message_s _hydro_allocate_message{};
+	float _previous_final_delta_left{NAN};
+	float _previous_final_delta_right{NAN};
+	hydro_cadrc_control_message_s _hydro_cadrc_control_message{};
+	hydro_depth_control_message_s _hydro_depth_control_message{};
 
 	manual_control_setpoint_s	_manual_control_setpoint{0};
 

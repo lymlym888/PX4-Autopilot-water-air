@@ -1,0 +1,55 @@
+uint64 timestamp
+uint64 timestamp_sample
+
+uint8 SOLUTION_SOURCE_SUPPRESSED = 0
+uint8 SOLUTION_SOURCE_COMPLETE_EXECUTABLE = 1
+uint8 SOLUTION_SOURCE_LEGACY_FIXED = 2
+uint8 SOLUTION_SOURCE_LEGACY_MANUAL = 3
+
+uint8 SYMMETRIC_LOSS_NONE = 0
+uint8 SYMMETRIC_LOSS_RATE_LIMIT_TRANSIENT = 1
+uint8 SYMMETRIC_LOSS_MODE_BRANCH_OVERRIDE = 2
+uint8 SYMMETRIC_LOSS_FOIL_GATE = 3
+uint8 SYMMETRIC_LOSS_ALLOCATOR_SUPPRESSED = 4
+
+bool allocator_valid
+bool allocator_converged
+bool allocator_finite
+bool allocator_bounded
+float32 allocator_residual
+uint16 allocator_iterations
+uint32 allocator_saturation_mask
+
+float32 speed_squared
+uint8 speed_source # 0=HY_ALT_SPEED, 1=measured debug_vect cache
+bool speed_context_stale
+
+float32 requested_force_z
+float32 realized_force_z
+float32 requested_symmetric_foil_component
+float32 realized_symmetric_foil_component
+float32 requested_differential_foil_component
+float32 realized_differential_foil_component
+float32 last_feasible_symmetric_foil_component
+float32 last_feasible_differential_foil_component
+
+int32 allocate_mode
+bool executable_solution_selected
+uint8 selected_solution_source
+bool mode_branch_overrode_solution
+float32 mode_branch_symmetric_before
+float32 mode_branch_symmetric_after
+float32 mode_branch_differential_before
+float32 mode_branch_differential_after
+float32 selected_thrust_left
+float32 selected_thrust_right
+float32 published_hydro_left
+float32 published_hydro_right
+bool symmetric_depth_lost
+uint8 symmetric_loss_reason
+
+bool full_best_feasible_solution_used
+bool best_feasible_rate_limited
+bool depth_degradation_active
+uint64 depth_degradation_cumulative_time_us
+bool allocator_output_suppressed

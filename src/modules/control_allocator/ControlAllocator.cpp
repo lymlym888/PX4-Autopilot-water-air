@@ -41,6 +41,8 @@
 
 #include "ControlAllocator.hpp"
 
+#include <lib/hydrofoil_allocation/HydrofoilAllocationModel.hpp>
+
 #include <drivers/drv_hrt.h>
 #include <circuit_breaker/circuit_breaker.h>
 #include <mathlib/math/Limits.hpp>
@@ -684,6 +686,9 @@ ControlAllocator::publish_actuator_controls()
 
 	_hydro_motors_sub.update(&_hydro_motors);
 	_hydro_servos_sub.update(&_hydro_servos);
+	_hydro_allocate_message_sub.update(&_hydro_allocate_message);
+	_hydro_cadrc_control_message_sub.update(&_hydro_cadrc_control_message);
+	_hydro_depth_control_message_sub.update(&_hydro_depth_control_message);
 
 	_manual_control_setpoint_sub.copy(&_manual_control_setpoint);
 
@@ -837,12 +842,27 @@ ControlAllocator::publish_actuator_controls()
 	_actuator_motors_pub.publish(actuator_motors);
 
 	// servos
+	float generic_servo4 = NAN;
+	float generic_servo5 = NAN;
+	float hydro_servo4 = _hydro_servos.control[3];
+	float hydro_servo5 = _hydro_servos.control[4];
+	float final_servo4 = NAN;
+	float final_servo5 = NAN;
+
 	if (_num_actuators[1] > 0) {
 		int servos_idx;
 
 		for (servos_idx = 0; servos_idx < _num_actuators[1] && servos_idx < actuator_servos_s::NUM_CONTROLS; servos_idx++) {
 			int selected_matrix = _control_allocation_selection_indexes[actuator_idx];
 			float actuator_sp = _control_allocation[selected_matrix]->getActuatorSetpoint()(actuator_idx_matrix[selected_matrix]);
+
+			if (servos_idx == 3) {
+				generic_servo4 = actuator_sp;
+
+			} else if (servos_idx == 4) {
+				generic_servo5 = actuator_sp;
+			}
+
 			actuator_sp += _hydro_servos.control[servos_idx];// 加上hydro_allocator的输出
 
 			//副翼禁用
@@ -851,6 +871,13 @@ ControlAllocator::publish_actuator_controls()
 			}
 
 			actuator_servos.control[servos_idx] = PX4_ISFINITE(actuator_sp) ? math::constrain(actuator_sp, -1.0f, 1.0f) : NAN;
+
+			if (servos_idx == 3) {
+				final_servo4 = actuator_servos.control[servos_idx];
+
+			} else if (servos_idx == 4) {
+				final_servo5 = actuator_servos.control[servos_idx];
+			}
 			++actuator_idx_matrix[selected_matrix];
 			++actuator_idx;
 
@@ -863,6 +890,252 @@ ControlAllocator::publish_actuator_controls()
 
 		_actuator_servos_pub.publish(actuator_servos);
 	}
+
+	haar_safe_roll_status_s safe_roll_status{};
+	safe_roll_status.timestamp = hrt_absolute_time();
+	safe_roll_status.timestamp_sample = _hydro_cadrc_control_message.timestamp_sample;
+	safe_roll_status.requested_mode = _hydro_cadrc_control_message.requested_mode;
+	safe_roll_status.active_mode = _hydro_cadrc_control_message.active_mode;
+	safe_roll_status.reset_count = _hydro_cadrc_control_message.reset_count;
+	safe_roll_status.fault_flags = _hydro_cadrc_control_message.fault_flags;
+	safe_roll_status.first_fault_code = _hydro_cadrc_control_message.first_fault_code;
+	safe_roll_status.execution_stage_mask = _hydro_cadrc_control_message.execution_stage_mask;
+	safe_roll_status.allocator_valid_streak = _hydro_cadrc_control_message.allocator_valid_streak;
+	safe_roll_status.allocator_invalid_streak = _hydro_cadrc_control_message.allocator_invalid_streak;
+	safe_roll_status.activation_required_streak = _hydro_cadrc_control_message.activation_required_streak;
+	safe_roll_status.activation_pending = _hydro_cadrc_control_message.activation_pending;
+	safe_roll_status.temporary_fallback_active = _hydro_cadrc_control_message.temporary_fallback_active;
+	safe_roll_status.healthy = _hydro_cadrc_control_message.healthy;
+	safe_roll_status.fallback_active = _hydro_cadrc_control_message.fallback_active;
+	safe_roll_status.dt_raw = _hydro_cadrc_control_message.dt_raw;
+	safe_roll_status.dt_used = _hydro_cadrc_control_message.dt_used;
+	safe_roll_status.manual_roll = _hydro_cadrc_control_message.manual_roll;
+	safe_roll_status.phi_sp = _hydro_cadrc_control_message.roll_sp;
+	safe_roll_status.phi = _hydro_cadrc_control_message.phi;
+	safe_roll_status.p = _hydro_cadrc_control_message.p;
+	safe_roll_status.u_legacy = _hydro_cadrc_control_message.u_legacy;
+	safe_roll_status.u_nominal = _hydro_cadrc_control_message.u_nominal;
+	safe_roll_status.u_selected = _hydro_cadrc_control_message.u_selected;
+	hydrofoil::AllocationContext effective_context{};
+	effective_context.lift_coefficient = _hydro_allocate_message.lift_coefficient;
+	effective_context.speed_squared = _hydro_allocate_message.speed_squared;
+	effective_context.body_pitch = _hydro_allocate_message.body_pitch;
+	effective_context.max_hydrofoil_angle = _hydro_allocate_message.context_max_hydrofoil_angle;
+	effective_context.max_thruster_thrust = _hydro_allocate_message.max_thruster_thrust;
+	effective_context.available_thruster_thrust = _hydro_allocate_message.available_thruster_thrust;
+
+	for (int row = 0; row < 4; ++row) {
+		for (int column = 0; column < 3; ++column) {
+			effective_context.virtual_control_matrix(row, column) =
+				_hydro_allocate_message.virtual_control_matrix[row * 3 + column];
+		}
+	}
+
+	hydrofoil::AllocationSolution final_commanded_solution{};
+	final_commanded_solution.delta_left_commanded =
+		final_servo5 * _hydro_allocate_message.context_max_hydrofoil_angle;
+	final_commanded_solution.delta_right_commanded =
+		final_servo4 * _hydro_allocate_message.context_max_hydrofoil_angle;
+	final_commanded_solution.thrust_left_commanded = _hydro_allocate_message.actuator_optimed[2];
+	final_commanded_solution.thrust_right_commanded = _hydro_allocate_message.actuator_optimed[3];
+	final_commanded_solution.source_command.force_x = _hydro_allocate_message.command_force_x;
+	final_commanded_solution.source_command.force_z = _hydro_allocate_message.command_force_z;
+	final_commanded_solution.source_command.u_phi = _hydro_allocate_message.command_u_phi;
+	final_commanded_solution.source_command.u_theta = _hydro_allocate_message.command_u_theta;
+	final_commanded_solution.source_command.u_psi = _hydro_allocate_message.command_u_psi;
+	final_commanded_solution.status.valid = _hydro_allocate_message.allocator_valid
+						&& PX4_ISFINITE(final_servo4) && PX4_ISFINITE(final_servo5);
+	const hydrofoil::AllocationForwardResult final_forward =
+		hydrofoil::HydrofoilAllocationModel::forward(effective_context, final_commanded_solution);
+	safe_roll_status.u_effective_model = final_forward.valid ? final_forward.u_phi_effective_model : NAN;
+	safe_roll_status.foil_position_feedback_available = false;
+	safe_roll_status.u_effective_is_model_based = true;
+	safe_roll_status.delta_l_commanded = final_commanded_solution.delta_left_commanded;
+	safe_roll_status.delta_r_commanded = final_commanded_solution.delta_right_commanded;
+	safe_roll_status.thrust_l_commanded = _hydro_allocate_message.actuator_optimed[2];
+	safe_roll_status.thrust_r_commanded = _hydro_allocate_message.actuator_optimed[3];
+	safe_roll_status.generic_servo4 = generic_servo4;
+	safe_roll_status.generic_servo5 = generic_servo5;
+	safe_roll_status.hydro_servo4 = hydro_servo4;
+	safe_roll_status.hydro_servo5 = hydro_servo5;
+	safe_roll_status.final_servo4 = final_servo4;
+	safe_roll_status.final_servo5 = final_servo5;
+	safe_roll_status.allocator_valid = _hydro_allocate_message.allocator_valid;
+	safe_roll_status.allocator_converged = _hydro_allocate_message.allocator_converged;
+	safe_roll_status.allocator_bounded = _hydro_allocate_message.allocator_bounded;
+	safe_roll_status.allocator_residual = _hydro_allocate_message.allocator_residual;
+	safe_roll_status.allocator_iterations = _hydro_allocate_message.allocator_iterations;
+	safe_roll_status.allocator_saturation_mask = _hydro_allocate_message.allocator_saturation_mask;
+	safe_roll_status.foil_gate_enabled = _hydro_allocate_message.foil_gate_enabled;
+	safe_roll_status.foil_aux_parameter = _hydro_allocate_message.foil_aux_parameter;
+	safe_roll_status.foil_aux_value = _hydro_allocate_message.foil_aux_value;
+	safe_roll_status.foil_threshold_parameter = _hydro_allocate_message.foil_threshold_parameter;
+	safe_roll_status.allocate_mode_parameter = _hydro_allocate_message.allocate_mode_parameter;
+	safe_roll_status.wing_max_angle_parameter = _hydro_allocate_message.wing_max_angle_parameter;
+	safe_roll_status.logical_left_servo_index = _hydro_allocate_message.logical_left_servo_index;
+	safe_roll_status.logical_right_servo_index = _hydro_allocate_message.logical_right_servo_index;
+	safe_roll_status.logical_mapping_matches_expected = _hydro_allocate_message.logical_mapping_matches_expected;
+	safe_roll_status.physical_left_right_mapping_verified = _hydro_cadrc_control_message.physical_mapping_verified;
+	safe_roll_status.physical_mapping_verified = _hydro_cadrc_control_message.physical_mapping_verified;
+	safe_roll_status.servo_ownership_verified = _hydro_cadrc_control_message.servo_ownership_verified;
+	safe_roll_status.logical_mapping_valid = _hydro_allocate_message.logical_mapping_matches_expected;
+	safe_roll_status.safe_roll_hardware_ready = _hydro_cadrc_control_message.safe_roll_hardware_ready;
+	constexpr float contribution_epsilon = 1e-5f;
+	safe_roll_status.generic_hydro_contribution_conflict =
+		(PX4_ISFINITE(generic_servo4) && fabsf(generic_servo4) > contribution_epsilon)
+		|| (PX4_ISFINITE(generic_servo5) && fabsf(generic_servo5) > contribution_epsilon);
+
+	const hydrofoil::NormalizedCommandComposition servo4_composition =
+		hydrofoil::HydrofoilAllocationModel::composeNormalizedCommand(generic_servo4, hydro_servo4, 0.f);
+	const hydrofoil::NormalizedCommandComposition servo5_composition =
+		hydrofoil::HydrofoilAllocationModel::composeNormalizedCommand(generic_servo5, hydro_servo5, 0.f);
+	const float expected_servo4 = servo4_composition.valid ? servo4_composition.final_commanded : NAN;
+	const float expected_servo5 = servo5_composition.valid ? servo5_composition.final_commanded : NAN;
+	safe_roll_status.generic_hydro_final_consistent =
+		PX4_ISFINITE(expected_servo4) && PX4_ISFINITE(expected_servo5)
+		&& PX4_ISFINITE(final_servo4) && PX4_ISFINITE(final_servo5)
+		&& fabsf(expected_servo4 - final_servo4) <= contribution_epsilon
+		&& fabsf(expected_servo5 - final_servo5) <= contribution_epsilon;
+
+	safe_roll_status.cycle_time_us = _hydro_cadrc_control_message.cycle_time_us;
+	safe_roll_status.requested_code = _hydro_cadrc_control_message.requested_code;
+	safe_roll_status.active_code = _hydro_cadrc_control_message.active_code;
+	safe_roll_status.trial_id = _hydro_cadrc_control_message.trial_id;
+	safe_roll_status.configuration_crc32 = _hydro_cadrc_control_message.configuration_crc32;
+	safe_roll_status.shadow_active = _hydro_cadrc_control_message.shadow_active;
+	safe_roll_status.output_enabled = _hydro_cadrc_control_message.output_enabled;
+	safe_roll_status.delta_left_commanded = final_commanded_solution.delta_left_commanded;
+	safe_roll_status.delta_right_commanded = final_commanded_solution.delta_right_commanded;
+	const float status_dt = _hydro_cadrc_control_message.dt_used;
+	safe_roll_status.foil_rate_left_commanded =
+		status_dt > 0.f && PX4_ISFINITE(_previous_final_delta_left)
+		? (final_commanded_solution.delta_left_commanded - _previous_final_delta_left) / status_dt : 0.f;
+	safe_roll_status.foil_rate_right_commanded =
+		status_dt > 0.f && PX4_ISFINITE(_previous_final_delta_right)
+		? (final_commanded_solution.delta_right_commanded - _previous_final_delta_right) / status_dt : 0.f;
+	_previous_final_delta_left = final_commanded_solution.delta_left_commanded;
+	_previous_final_delta_right = final_commanded_solution.delta_right_commanded;
+	safe_roll_status.candidate_valid = _hydro_cadrc_control_message.candidate_valid;
+	safe_roll_status.estimator_ready = _hydro_cadrc_control_message.estimator_ready;
+	safe_roll_status.certificate_ready = _hydro_cadrc_control_message.certificate_ready;
+	safe_roll_status.certificate_warmup = _hydro_cadrc_control_message.certificate_warmup;
+	safe_roll_status.allocation_interval_degraded =
+		_hydro_cadrc_control_message.allocation_interval_degraded;
+	_haar_safe_roll_status_pub.publish(safe_roll_status);
+
+	haar_depth_control_status_s depth_status{};
+	_haar_depth_allocator_status_sub.update(&_haar_depth_allocator_status);
+	depth_status.timestamp = safe_roll_status.timestamp;
+	depth_status.timestamp_sample = _hydro_cadrc_control_message.timestamp_sample;
+	depth_status.requested_code = _hydro_cadrc_control_message.requested_code;
+	depth_status.active_code = _hydro_cadrc_control_message.active_code;
+	depth_status.depth_controller_mode = _hydro_depth_control_message.depth_controller_mode;
+	depth_status.depth_reference = _hydro_depth_control_message.depth_setpoint;
+	depth_status.measured_depth = _hydro_depth_control_message.depth;
+	depth_status.depth_error = _hydro_depth_control_message.depth_setpoint - _hydro_depth_control_message.depth;
+	depth_status.original_depth_controller_output = _hydro_depth_control_message.vertical_thrust;
+	depth_status.depth_controller_enabled = _hydro_depth_control_message.depth_controller_enabled;
+	depth_status.depth_controller_output_finite = _hydro_depth_control_message.depth_controller_output_finite;
+	depth_status.pitch_reference = _hydro_cadrc_control_message.pitch_sp;
+	depth_status.measured_pitch = _hydro_allocate_message.body_pitch;
+	depth_status.u_theta = _hydro_allocate_message.command_u_theta;
+	depth_status.command_force_x = _hydro_allocate_message.command_force_x;
+	depth_status.command_force_z = _hydro_allocate_message.command_force_z;
+	const hydrofoil::FoilCommandComponents requested_components =
+		hydrofoil::HydrofoilAllocationModel::decomposeFoilCommand(
+			_hydro_allocate_message.allocator_delta_left_requested,
+			_hydro_allocate_message.allocator_delta_right_requested);
+	const hydrofoil::FoilCommandComponents realized_components =
+		hydrofoil::HydrofoilAllocationModel::decomposeFoilCommand(
+			final_commanded_solution.delta_left_commanded, final_commanded_solution.delta_right_commanded);
+	depth_status.requested_symmetric_foil_component =
+		requested_components.valid ? requested_components.symmetric : NAN;
+	depth_status.realized_symmetric_foil_component =
+		realized_components.valid ? realized_components.symmetric : NAN;
+	depth_status.safe_roll_differential_component =
+		realized_components.valid ? realized_components.differential : NAN;
+	depth_status.realized_differential_foil_component =
+		realized_components.valid ? realized_components.differential : NAN;
+	depth_status.final_delta_left = final_commanded_solution.delta_left_commanded;
+	depth_status.final_delta_right = final_commanded_solution.delta_right_commanded;
+
+	// This production hydro chain has no dedicated, explicitly mapped tail/elevator
+	// output. Pitch CADRC is represented by u_theta; historical pool parameters
+	// set its allocator column to zero. Keep unavailable channels explicit instead
+	// of guessing an actuator index from the airframe configuration.
+	depth_status.tail_elevator_available = false;
+	depth_status.tail_elevator_requested = NAN;
+	depth_status.tail_elevator_final = NAN;
+	depth_status.allocator_valid = _hydro_allocate_message.allocator_valid;
+	depth_status.allocator_converged = _hydro_allocate_message.allocator_converged;
+	depth_status.allocator_finite = _hydro_allocate_message.allocator_finite;
+	depth_status.allocator_bounded = _hydro_allocate_message.allocator_bounded;
+	depth_status.allocator_residual = _hydro_allocate_message.allocator_residual;
+	depth_status.allocator_iterations = _hydro_allocate_message.allocator_iterations;
+	depth_status.allocator_saturation_mask = _hydro_allocate_message.allocator_saturation_mask;
+	depth_status.speed_squared = _hydro_allocate_message.speed_squared;
+	depth_status.speed_source = _haar_depth_allocator_status.speed_source;
+	depth_status.speed_context_stale = _haar_depth_allocator_status.speed_context_stale;
+	depth_status.foil_gate_enabled = _hydro_allocate_message.foil_gate_enabled;
+	depth_status.requested_force_z = _haar_depth_allocator_status.requested_force_z;
+	depth_status.realized_force_z = _haar_depth_allocator_status.realized_force_z;
+	depth_status.requested_differential_foil_component =
+		_haar_depth_allocator_status.requested_differential_foil_component;
+	depth_status.last_feasible_symmetric_foil_component =
+		_haar_depth_allocator_status.last_feasible_symmetric_foil_component;
+	depth_status.last_feasible_differential_foil_component =
+		_haar_depth_allocator_status.last_feasible_differential_foil_component;
+	depth_status.full_best_feasible_solution_used =
+		_haar_depth_allocator_status.full_best_feasible_solution_used;
+	depth_status.best_feasible_rate_limited = _haar_depth_allocator_status.best_feasible_rate_limited;
+	depth_status.depth_degradation_active = _haar_depth_allocator_status.depth_degradation_active;
+	depth_status.depth_degradation_cumulative_time_us =
+		_haar_depth_allocator_status.depth_degradation_cumulative_time_us;
+	constexpr float depth_command_epsilon = 1e-5f;
+	const bool final_servo_saturated =
+		(PX4_ISFINITE(generic_servo4) && PX4_ISFINITE(hydro_servo4)
+		 && fabsf(generic_servo4 + hydro_servo4) > 1.f)
+		|| (PX4_ISFINITE(generic_servo5) && PX4_ISFINITE(hydro_servo5)
+		    && fabsf(generic_servo5 + hydro_servo5) > 1.f);
+	depth_status.depth_command_suppressed = false;
+	depth_status.depth_command_limited = false;
+	depth_status.suppression_reason = haar_depth_control_status_s::SUPPRESSION_NONE;
+
+	if (!depth_status.depth_controller_enabled) {
+		depth_status.depth_command_suppressed = true;
+		depth_status.suppression_reason = haar_depth_control_status_s::SUPPRESSION_CONTROLLER_DISABLED;
+
+	} else if (!depth_status.depth_controller_output_finite
+		   || !PX4_ISFINITE(depth_status.command_force_x)
+		   || !PX4_ISFINITE(depth_status.command_force_z)) {
+		depth_status.depth_command_suppressed = true;
+		depth_status.suppression_reason = haar_depth_control_status_s::SUPPRESSION_CONTROLLER_NONFINITE;
+
+	} else if (!depth_status.foil_gate_enabled
+		   && fabsf(depth_status.original_depth_controller_output) > depth_command_epsilon) {
+		depth_status.depth_command_suppressed = true;
+		depth_status.suppression_reason = haar_depth_control_status_s::SUPPRESSION_FOIL_GATE;
+
+	} else if (_hydro_allocate_message.allocator_output_suppressed
+		   && fabsf(depth_status.original_depth_controller_output) > depth_command_epsilon) {
+		depth_status.depth_command_suppressed = true;
+		depth_status.suppression_reason = haar_depth_control_status_s::SUPPRESSION_ALLOCATOR_INVALID;
+
+	} else if (depth_status.full_best_feasible_solution_used) {
+		depth_status.depth_command_limited = true;
+		depth_status.suppression_reason =
+			haar_depth_control_status_s::SUPPRESSION_BOUNDED_BEST_FEASIBLE;
+
+	} else if (_hydro_allocate_message.allocator_saturation_mask != hydrofoil::SaturationNone) {
+		depth_status.depth_command_limited = true;
+		depth_status.suppression_reason = haar_depth_control_status_s::SUPPRESSION_ALLOCATION_SATURATION;
+
+	} else if (final_servo_saturated) {
+		depth_status.depth_command_limited = true;
+		depth_status.suppression_reason = haar_depth_control_status_s::SUPPRESSION_FINAL_SATURATION;
+	}
+
+	_haar_depth_control_status_pub.publish(depth_status);
 	// PX4_INFO("actuator_servos: %f %f %f %f %f %f %f %f", (double)actuator_servos.control[0], (double)actuator_servos.control[1], (double)actuator_servos.control[2], (double)actuator_servos.control[3],
 	// 			(double)actuator_servos.control[4], (double)actuator_servos.control[5], (double)actuator_servos.control[6], (double)actuator_servos.control[7]);
 }

@@ -37,8 +37,8 @@ px4_add_module(
 	SRCS
 		HydroAllocator.cpp
 	DEPENDS
+		HydrofoilAllocationModel
 		px4_work_queue
 	MODULE_CONFIG
 		module.yaml
 	)
-

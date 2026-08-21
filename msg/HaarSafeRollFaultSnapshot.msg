@@ -1,0 +1,38 @@
+uint64 timestamp
+uint64 timestamp_sample
+
+uint32 first_fault_code
+uint32 prerequisite_fault_flags
+uint32 reset_count
+uint8 requested_mode
+uint8 attitude_reset_counter
+uint8 history_count
+
+uint64 allocator_timestamp
+uint32 allocator_age_us
+bool activation_pending
+bool mode_activated
+bool in_stab
+bool allocator_timestamp_valid
+bool allocator_valid
+bool allocator_converged
+bool allocator_finite
+bool allocator_bounded
+bool foil_gate_enabled
+bool foil_aux_above_threshold
+bool logical_mapping_valid
+bool estimator_initialized
+
+int32 foil_aux_parameter
+float32 foil_aux_value
+float32 foil_threshold_parameter
+
+float32 previous_u_effective_model
+float32 b_hat
+float32 b_lower
+float32 b_upper
+float32 rho_b
+float32 d_hat
+float32 rho_d
+float32 filtered_u
+float32 filtered_r

@@ -1,0 +1,873 @@
+diff --git a/msg/CMakeLists.txt b/msg/CMakeLists.txt
+index 6661b4bc96..68da506350 100644
+--- a/msg/CMakeLists.txt
++++ b/msg/CMakeLists.txt
+@@ -255,6 +255,7 @@ set(msg_files
+ 	DepthFusion.msg
+ 	DepthEstimated.msg
+ 	HydroAllocateMessage.msg
++	HaarSafeRollStatus.msg
+ 	HydroDepthControlMessage.msg
+ 	HydroTiltMessage.msg
+ 	WaterLevel.msg
+diff --git a/msg/HydroAllocateMessage.msg b/msg/HydroAllocateMessage.msg
+index 60c5728c7b..d1a7a2ca1a 100644
+--- a/msg/HydroAllocateMessage.msg
++++ b/msg/HydroAllocateMessage.msg
+@@ -1,4 +1,5 @@
+ uint64 timestamp                # time since system start (microseconds)
++uint64 timestamp_sample
+ 
+ float32[4] thrust_xz_control	# 控制得到的四个推力，0-lx 1-lz 2-rx 3-rz
+ float32[4] thrust_xz_limited	# 限幅后的四个推力，顺序同上
+@@ -9,3 +10,27 @@ float32 man_delta_motor
+ float32 man_delta_servo
+ float32 man_manual_motor
+ float32 man_manual_servo
++
++bool allocator_valid
++bool allocator_converged
++bool allocator_finite
++uint16 allocator_iterations
++float32 allocator_residual
++uint32 allocator_saturation_mask
++uint8 allocator_solve_status
++float32 jacobian_condition
++
++float32 u_phi_effective_model
++bool foil_position_feedback_available
++bool u_effective_is_model_based
++float32 g_left
++float32 g_right
++int8 logical_left_servo_index
++int8 logical_right_servo_index
++bool logical_mapping_matches_expected
++
++bool foil_gate_enabled
++int32 foil_aux_parameter
++float32 foil_threshold_parameter
++int32 allocate_mode_parameter
++float32 wing_max_angle_parameter
+diff --git a/msg/HydroCadrcControlMessage.msg b/msg/HydroCadrcControlMessage.msg
+index 9aed5fb118..e63c08a9a6 100644
+--- a/msg/HydroCadrcControlMessage.msg
++++ b/msg/HydroCadrcControlMessage.msg
+@@ -1,4 +1,5 @@
+ uint64 timestamp                # time since system start (microseconds)
++uint64 timestamp_sample
+ 
+ float32 roll_sp
+ float32 pitch_sp
+@@ -13,3 +14,19 @@ float32 pitch_z11
+ float32 pitch_z12
+ float32 pitch_z21
+ float32 pitch_z22
++
++uint8 requested_mode
++uint8 active_mode
++uint32 reset_count
++uint32 fault_flags
++bool healthy
++bool fallback_active
++float32 dt_raw
++float32 dt_used
++float32 manual_roll
++float32 phi
++float32 p
++float32 u_legacy
++float32 u_nominal
++float32 u_selected
++uint32 cycle_time_us
+diff --git a/src/lib/CMakeLists.txt b/src/lib/CMakeLists.txt
+index 4e20ce106b..fb8975f81e 100644
+--- a/src/lib/CMakeLists.txt
++++ b/src/lib/CMakeLists.txt
+@@ -53,6 +53,7 @@ add_subdirectory(field_sensor_bias_estimator EXCLUDE_FROM_ALL)
+ add_subdirectory(geo EXCLUDE_FROM_ALL)
+ add_subdirectory(heatshrink EXCLUDE_FROM_ALL)
+ add_subdirectory(hysteresis EXCLUDE_FROM_ALL)
++add_subdirectory(hydrofoil_allocation EXCLUDE_FROM_ALL)
+ add_subdirectory(l1 EXCLUDE_FROM_ALL)
+ add_subdirectory(led EXCLUDE_FROM_ALL)
+ add_subdirectory(matrix EXCLUDE_FROM_ALL)
+diff --git a/src/modules/control_allocator/ControlAllocator.cpp b/src/modules/control_allocator/ControlAllocator.cpp
+index 5529bc072e..159201d5e8 100644
+--- a/src/modules/control_allocator/ControlAllocator.cpp
++++ b/src/modules/control_allocator/ControlAllocator.cpp
+@@ -684,6 +684,8 @@ ControlAllocator::publish_actuator_controls()
+ 
+ 	_hydro_motors_sub.update(&_hydro_motors);
+ 	_hydro_servos_sub.update(&_hydro_servos);
++	_hydro_allocate_message_sub.update(&_hydro_allocate_message);
++	_hydro_cadrc_control_message_sub.update(&_hydro_cadrc_control_message);
+ 
+ 	_manual_control_setpoint_sub.copy(&_manual_control_setpoint);
+ 
+@@ -837,12 +839,27 @@ ControlAllocator::publish_actuator_controls()
+ 	_actuator_motors_pub.publish(actuator_motors);
+ 
+ 	// servos
++	float generic_servo4 = NAN;
++	float generic_servo5 = NAN;
++	float hydro_servo4 = _hydro_servos.control[3];
++	float hydro_servo5 = _hydro_servos.control[4];
++	float final_servo4 = NAN;
++	float final_servo5 = NAN;
++
+ 	if (_num_actuators[1] > 0) {
+ 		int servos_idx;
+ 
+ 		for (servos_idx = 0; servos_idx < _num_actuators[1] && servos_idx < actuator_servos_s::NUM_CONTROLS; servos_idx++) {
+ 			int selected_matrix = _control_allocation_selection_indexes[actuator_idx];
+ 			float actuator_sp = _control_allocation[selected_matrix]->getActuatorSetpoint()(actuator_idx_matrix[selected_matrix]);
++
++			if (servos_idx == 3) {
++				generic_servo4 = actuator_sp;
++
++			} else if (servos_idx == 4) {
++				generic_servo5 = actuator_sp;
++			}
++
+ 			actuator_sp += _hydro_servos.control[servos_idx];// 加上hydro_allocator的输出
+ 
+ 			//副翼禁用
+@@ -851,6 +868,13 @@ ControlAllocator::publish_actuator_controls()
+ 			}
+ 
+ 			actuator_servos.control[servos_idx] = PX4_ISFINITE(actuator_sp) ? math::constrain(actuator_sp, -1.0f, 1.0f) : NAN;
++
++			if (servos_idx == 3) {
++				final_servo4 = actuator_servos.control[servos_idx];
++
++			} else if (servos_idx == 4) {
++				final_servo5 = actuator_servos.control[servos_idx];
++			}
+ 			++actuator_idx_matrix[selected_matrix];
+ 			++actuator_idx;
+ 
+@@ -863,6 +887,64 @@ ControlAllocator::publish_actuator_controls()
+ 
+ 		_actuator_servos_pub.publish(actuator_servos);
+ 	}
++
++	haar_safe_roll_status_s safe_roll_status{};
++	safe_roll_status.timestamp = hrt_absolute_time();
++	safe_roll_status.timestamp_sample = _hydro_cadrc_control_message.timestamp_sample;
++	safe_roll_status.requested_mode = _hydro_cadrc_control_message.requested_mode;
++	safe_roll_status.active_mode = _hydro_cadrc_control_message.active_mode;
++	safe_roll_status.reset_count = _hydro_cadrc_control_message.reset_count;
++	safe_roll_status.fault_flags = _hydro_cadrc_control_message.fault_flags;
++	safe_roll_status.healthy = _hydro_cadrc_control_message.healthy;
++	safe_roll_status.fallback_active = _hydro_cadrc_control_message.fallback_active;
++	safe_roll_status.dt_raw = _hydro_cadrc_control_message.dt_raw;
++	safe_roll_status.dt_used = _hydro_cadrc_control_message.dt_used;
++	safe_roll_status.manual_roll = _hydro_cadrc_control_message.manual_roll;
++	safe_roll_status.phi_sp = _hydro_cadrc_control_message.roll_sp;
++	safe_roll_status.phi = _hydro_cadrc_control_message.phi;
++	safe_roll_status.p = _hydro_cadrc_control_message.p;
++	safe_roll_status.u_legacy = _hydro_cadrc_control_message.u_legacy;
++	safe_roll_status.u_nominal = _hydro_cadrc_control_message.u_nominal;
++	safe_roll_status.u_selected = _hydro_cadrc_control_message.u_selected;
++	safe_roll_status.u_effective_model = _hydro_allocate_message.u_phi_effective_model;
++	safe_roll_status.foil_position_feedback_available = false;
++	safe_roll_status.u_effective_is_model_based = true;
++	safe_roll_status.delta_l_commanded = _hydro_allocate_message.actuator_optimed[0];
++	safe_roll_status.delta_r_commanded = _hydro_allocate_message.actuator_optimed[1];
++	safe_roll_status.thrust_l_commanded = _hydro_allocate_message.actuator_optimed[2];
++	safe_roll_status.thrust_r_commanded = _hydro_allocate_message.actuator_optimed[3];
++	safe_roll_status.generic_servo4 = generic_servo4;
++	safe_roll_status.generic_servo5 = generic_servo5;
++	safe_roll_status.hydro_servo4 = hydro_servo4;
++	safe_roll_status.hydro_servo5 = hydro_servo5;
++	safe_roll_status.final_servo4 = final_servo4;
++	safe_roll_status.final_servo5 = final_servo5;
++	safe_roll_status.allocator_valid = _hydro_allocate_message.allocator_valid;
++	safe_roll_status.allocator_converged = _hydro_allocate_message.allocator_converged;
++	safe_roll_status.allocator_residual = _hydro_allocate_message.allocator_residual;
++	safe_roll_status.allocator_iterations = _hydro_allocate_message.allocator_iterations;
++	safe_roll_status.allocator_saturation_mask = _hydro_allocate_message.allocator_saturation_mask;
++	safe_roll_status.foil_gate_enabled = _hydro_allocate_message.foil_gate_enabled;
++	safe_roll_status.foil_aux_parameter = _hydro_allocate_message.foil_aux_parameter;
++	safe_roll_status.foil_threshold_parameter = _hydro_allocate_message.foil_threshold_parameter;
++	safe_roll_status.allocate_mode_parameter = _hydro_allocate_message.allocate_mode_parameter;
++	safe_roll_status.wing_max_angle_parameter = _hydro_allocate_message.wing_max_angle_parameter;
++	safe_roll_status.logical_left_servo_index = _hydro_allocate_message.logical_left_servo_index;
++	safe_roll_status.logical_right_servo_index = _hydro_allocate_message.logical_right_servo_index;
++	safe_roll_status.logical_mapping_matches_expected = _hydro_allocate_message.logical_mapping_matches_expected;
++	safe_roll_status.physical_left_right_mapping_verified = false;
++	constexpr float contribution_epsilon = 1e-5f;
++	safe_roll_status.generic_hydro_contribution_conflict =
++		(PX4_ISFINITE(generic_servo4) && fabsf(generic_servo4) > contribution_epsilon)
++		|| (PX4_ISFINITE(generic_servo5) && fabsf(generic_servo5) > contribution_epsilon);
++
++	if (safe_roll_status.generic_hydro_contribution_conflict) {
++		safe_roll_status.fault_flags |= 1u << 12;
++		safe_roll_status.healthy = false;
++	}
++
++	safe_roll_status.cycle_time_us = _hydro_cadrc_control_message.cycle_time_us;
++	_haar_safe_roll_status_pub.publish(safe_roll_status);
+ 	// PX4_INFO("actuator_servos: %f %f %f %f %f %f %f %f", (double)actuator_servos.control[0], (double)actuator_servos.control[1], (double)actuator_servos.control[2], (double)actuator_servos.control[3],
+ 	// 			(double)actuator_servos.control[4], (double)actuator_servos.control[5], (double)actuator_servos.control[6], (double)actuator_servos.control[7]);
+ }
+diff --git a/src/modules/control_allocator/ControlAllocator.hpp b/src/modules/control_allocator/ControlAllocator.hpp
+index 08656ae760..8d74518082 100644
+--- a/src/modules/control_allocator/ControlAllocator.hpp
++++ b/src/modules/control_allocator/ControlAllocator.hpp
+@@ -76,6 +76,9 @@
+ #include <uORB/topics/vehicle_control_mode.h>
+ #include <uORB/topics/vehicle_torque_setpoint.h>
+ #include <uORB/topics/vehicle_thrust_setpoint.h>
++#include <uORB/topics/hydro_allocate_message.h>
++#include <uORB/topics/hydro_cadrc_control_message.h>
++#include <uORB/topics/haar_safe_roll_status.h>
+ #include <uORB/topics/vehicle_status.h>
+ #include <uORB/topics/failure_detector_status.h>
+ #include <uORB/topics/manual_control_setpoint.h>
+@@ -181,6 +184,8 @@ private:
+ 
+ 	uORB::Subscription _hydro_motors_sub{ORB_ID(hydro_motors)};
+ 	uORB::Subscription _hydro_servos_sub{ORB_ID(hydro_servos)};
++	uORB::Subscription _hydro_allocate_message_sub{ORB_ID(hydro_allocate_message)};
++	uORB::Subscription _hydro_cadrc_control_message_sub{ORB_ID(hydro_cadrc_control_message)};
+ 
+ 	uORB::Subscription _manual_control_setpoint_sub{ORB_ID(manual_control_setpoint)};
+ 
+@@ -189,6 +194,7 @@ private:
+ 
+ 	uORB::Publication<actuator_motors_s>	_actuator_motors_pub{ORB_ID(actuator_motors)};
+ 	uORB::Publication<actuator_servos_s>	_actuator_servos_pub{ORB_ID(actuator_servos)};
++	uORB::Publication<haar_safe_roll_status_s> _haar_safe_roll_status_pub{ORB_ID(haar_safe_roll_status)};
+ 	uORB::Publication<actuator_servos_trim_s>	_actuator_servos_trim_pub{ORB_ID(actuator_servos_trim)};
+ 
+ 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
+@@ -199,6 +205,8 @@ private:
+ 
+ 	actuator_motors_s _hydro_motors{0};
+ 	actuator_servos_s _hydro_servos{0};
++	hydro_allocate_message_s _hydro_allocate_message{};
++	hydro_cadrc_control_message_s _hydro_cadrc_control_message{};
+ 
+ 	manual_control_setpoint_s	_manual_control_setpoint{0};
+ 
+diff --git a/src/modules/hydro_allocator/CMakeLists.txt b/src/modules/hydro_allocator/CMakeLists.txt
+index 66013cdd0e..b00b90469a 100644
+--- a/src/modules/hydro_allocator/CMakeLists.txt
++++ b/src/modules/hydro_allocator/CMakeLists.txt
+@@ -37,8 +37,8 @@ px4_add_module(
+ 	SRCS
+ 		HydroAllocator.cpp
+ 	DEPENDS
++		HydrofoilAllocationModel
+ 		px4_work_queue
+ 	MODULE_CONFIG
+ 		module.yaml
+ 	)
+-
+diff --git a/src/modules/hydro_allocator/HydroAllocator.cpp b/src/modules/hydro_allocator/HydroAllocator.cpp
+index f626c221f9..45c5319eec 100644
+--- a/src/modules/hydro_allocator/HydroAllocator.cpp
++++ b/src/modules/hydro_allocator/HydroAllocator.cpp
+@@ -127,70 +127,6 @@ HydroAllocator::parameters_update(bool force)
+ 	}
+ }
+ 
+-//待优化求解的方程，优化求解的目标就是让这个方程等于0
+-Vector2f HydroAllocator::func(Vector2f x, NfParams p)
+-{
+-	float alpha = x(0);
+-	float T = x(1);
+-
+-	Vector2f out;
+-
+-	out(0) = p.Fx - p.KL*p.v2*(alpha+p.alpha0)*std::sin(p.alpha0) - T*std::cos(alpha);
+-	out(1) = p.Fz + p.KL*p.v2*(alpha+p.alpha0)*std::cos(p.alpha0) + T*std::sin(alpha);
+-
+-	return out;
+-}
+-
+-//待优化方程的雅可比矩阵
+-SquareMatrix<float, 2> HydroAllocator::J_func(Vector2f x, NfParams p)
+-{
+-	float alpha = x(0);
+-	float T = x(1);
+-
+-	SquareMatrix<float, 2> J;
+-
+-	J(0, 0) = -p.KL*p.v2*std::sin(p.alpha0) + T*std::sin(alpha);
+-	J(0, 1) = -std::cos(alpha);
+-	J(1, 0) = p.KL*p.v2*std::cos(p.alpha0) + T*std::cos(alpha);
+-	J(1, 1) = std::sin(alpha);
+-
+-	return J;
+-}
+-
+-//使用牛顿法优化求解
+-void HydroAllocator::optim(float x_array[2], NfParams p)
+-{
+-	Vector2f x(x_array);
+-	SquareMatrix<float, 2> J;
+-	Vector2f func_out;
+-	SquareMatrix<float, 2> J_inv;
+-	Vector2f delta_x;
+-	Vector2f x_new;
+-
+-	for(int i=0; i<10; i++)
+-	{
+-		J = J_func(x, p);
+-		func_out = func(x, p);
+-
+-		inv(J, J_inv);
+-
+-		delta_x = - J_inv * func_out;
+-
+-		if(delta_x.norm_squared() < (float)1e-6)
+-			break;
+-
+-		x_new = x + delta_x;
+-
+-		x_new(0) = math::constrain(x_new(0), - _param_hy_wing_max_a.get(), _param_hy_wing_max_a.get());
+-		float x1_max = math::constrain(_param_hy_th_max_gain.get() * (_manual_control_setpoint.throttle+1)*0.5f, 0.f, 1.f) * _param_hy_rt_max_thrust.get();
+-		x_new(1) = math::constrain(x_new(1), 0.f, x1_max);
+-
+-		x = x_new;
+-	}
+-
+-	x.copyTo(x_array);
+-}
+-
+ void HydroAllocator::Run()
+ {
+ 	if (should_exit()) {
+@@ -303,14 +239,6 @@ void HydroAllocator::Run()
+ 
+ 	hydro_allocate_message_s hydro_allocate_message_msg{0};
+ 
+-	//0是左边，1是右边
+-	float thrust_x[2];
+-	float thrust_z[2];
+-	thrust_x[0] = _hydro_thrust_setpoint_msg.xyz[0] / 2;
+-	thrust_x[1] = thrust_x[0];
+-	thrust_z[0] = _hydro_thrust_setpoint_msg.xyz[2] / 2;
+-	thrust_z[1] = thrust_z[0];
+-
+ 	//执行器顺序：x0 z0 x1 z1
+ 	//力矩顺序：  rol pit yaw
+ 	float allocate_matrix_array[4][3] = {
+@@ -320,61 +248,18 @@ void HydroAllocator::Run()
+ 		{_params.hy_vzrt_rol_r[1], _params.hy_vzrt_pit_r[1], _params.hy_vzrt_yaw_r[1]}
+ 	};
+ 
+-	//计算torque_setpoint导致的各虚拟执行器的期望推力变化量
+-	Matrix<float, 4, 3> allocate_matrix(allocate_matrix_array);
+-	Vector3f torque_vector(_hydro_torque_setpoint_msg.xyz);
+-	Vector4f delta_force_vector;
+-
+-	delta_force_vector = allocate_matrix * torque_vector;
+-
+-	thrust_x[0] += delta_force_vector(0);
+-	thrust_z[0] += delta_force_vector(1);
+-	thrust_x[1] += delta_force_vector(2);
+-	thrust_z[1] += delta_force_vector(3);
+-
+-	hydro_allocate_message_msg.thrust_xz_control[0] = thrust_x[0];
+-	hydro_allocate_message_msg.thrust_xz_control[1] = thrust_z[0];
+-	hydro_allocate_message_msg.thrust_xz_control[2] = thrust_x[1];
+-	hydro_allocate_message_msg.thrust_xz_control[3] = thrust_z[1];
+-
+-	//避免thrust_x为负，因为这可能导致优化求解出问题
+-	float sum_thrust_x = thrust_x[0] + thrust_x[1];
+-	if(sum_thrust_x < 0)
+-	{
+-		sum_thrust_x *= 0.5f;
+-		thrust_x[0] -= sum_thrust_x;
+-		thrust_x[1] -= sum_thrust_x;
+-	}
+-	if(thrust_x[0] < 0)
+-	{
+-		thrust_x[1] += thrust_x[0];
+-		thrust_x[0] = 0;
+-	}
+-	else if(thrust_x[1] < 0)
+-	{
+-		thrust_x[0] += thrust_x[1];
+-		thrust_x[1] = 0;
+-	}
+-
+-	hydro_allocate_message_msg.thrust_xz_limited[0] = thrust_x[0];
+-	hydro_allocate_message_msg.thrust_xz_limited[1] = thrust_z[0];
+-	hydro_allocate_message_msg.thrust_xz_limited[2] = thrust_x[1];
+-	hydro_allocate_message_msg.thrust_xz_limited[3] = thrust_z[1];
+-
+-	//定义待优化求解的变量，第一行是左侧水翼，第二行是右侧水翼，第一列是攻角，第二列是推力
+-	//攻角的初始值为0，推力初始值为x方向期望推力的一半
+-	float x[2][2] = {
+-		{0, _hydro_thrust_setpoint_msg.xyz[0] / 2},
+-		{0, _hydro_thrust_setpoint_msg.xyz[0] / 2}
+-	};
+-
+-	//填入方程的参数
+-	_nf_params.alpha0 = euler_angles.theta();
+-	_nf_params.KL = _param_hy_wing_kl.get();
++	hydrofoil::AllocationContext allocation_context{};
++	allocation_context.body_pitch = euler_angles.theta();
++	allocation_context.lift_coefficient = _param_hy_wing_kl.get();
++	allocation_context.max_hydrofoil_angle = _param_hy_wing_max_a.get();
++	allocation_context.max_thruster_thrust = _param_hy_rt_max_thrust.get();
++	allocation_context.available_thruster_thrust = math::constrain(_param_hy_th_max_gain.get()
++			* (_manual_control_setpoint.throttle + 1.f) * 0.5f, 0.f, 1.f) * _param_hy_rt_max_thrust.get();
++	allocation_context.virtual_control_matrix = Matrix<float, 4, 3>(allocate_matrix_array);
+ 
+ 	if(_param_hy_speed_select.get() == 0)//使用替代速度
+ 	{
+-		_nf_params.v2 = _param_hy_alt_speed.get() * _param_hy_alt_speed.get();
++		allocation_context.speed_squared = _param_hy_alt_speed.get() * _param_hy_alt_speed.get();
+ 	}
+ 	else // 使用实际速度
+ 	{
+@@ -384,22 +269,61 @@ void HydroAllocator::Run()
+ 			float real_v2 = debug_vect_msg.z;
+ 			if(real_v2 < 1.0f)
+ 				real_v2 = 1.0f;	// 小于1时按照1来处理
+-			_nf_params.v2 = real_v2;
++			allocation_context.speed_squared = real_v2;
+ 		}
+ 	}
+ 
+-	//代入虚拟执行器的期望力，并进行优化求解
+-	_nf_params.Fx = thrust_x[0];
+-	_nf_params.Fz = thrust_z[0];
+-	optim(x[0], _nf_params);
+-	_nf_params.Fx = thrust_x[1];
+-	_nf_params.Fz = thrust_z[1];
+-	optim(x[1], _nf_params);
++	hydrofoil::AllocationCommand allocation_command{};
++	allocation_command.force_x = _hydro_thrust_setpoint_msg.xyz[0];
++	allocation_command.force_z = _hydro_thrust_setpoint_msg.xyz[2];
++	allocation_command.u_phi = _hydro_torque_setpoint_msg.xyz[0];
++	allocation_command.u_theta = _hydro_torque_setpoint_msg.xyz[1];
++	allocation_command.u_psi = _hydro_torque_setpoint_msg.xyz[2];
++	const hydrofoil::AllocationSolution allocation_solution =
++		hydrofoil::HydrofoilAllocationModel::solve(allocation_context, allocation_command);
++	const hydrofoil::AllocationForwardResult forward_result =
++		hydrofoil::HydrofoilAllocationModel::forward(allocation_context, allocation_solution);
++	const hydrofoil::AllocationLinearization linearization =
++		hydrofoil::HydrofoilAllocationModel::linearize(allocation_context, allocation_solution);
++
++	float x[2][2] {
++		{allocation_solution.delta_left_commanded, allocation_solution.thrust_left_commanded},
++		{allocation_solution.delta_right_commanded, allocation_solution.thrust_right_commanded}
++	};
++
++	if (!allocation_solution.status.valid) {
++		x[0][0] = 0.f;
++		x[1][0] = 0.f;
++		x[0][1] = 0.f;
++		x[1][1] = 0.f;
++	}
++
++	allocation_solution.virtual_forces_control.copyTo(hydro_allocate_message_msg.thrust_xz_control);
++	allocation_solution.virtual_forces_commanded.copyTo(hydro_allocate_message_msg.thrust_xz_limited);
+ 
+ 	hydro_allocate_message_msg.actuator_optimed[0] = x[0][0];
+ 	hydro_allocate_message_msg.actuator_optimed[1] = x[1][0];
+ 	hydro_allocate_message_msg.actuator_optimed[2] = x[0][1];
+ 	hydro_allocate_message_msg.actuator_optimed[3] = x[1][1];
++	hydro_allocate_message_msg.timestamp_sample = _hydro_torque_setpoint_msg.timestamp_sample;
++	hydro_allocate_message_msg.allocator_valid = allocation_solution.status.valid;
++	hydro_allocate_message_msg.allocator_converged = allocation_solution.status.converged;
++	hydro_allocate_message_msg.allocator_finite = allocation_solution.status.finite;
++	hydro_allocate_message_msg.allocator_iterations = allocation_solution.status.iterations;
++	hydro_allocate_message_msg.allocator_residual = allocation_solution.status.residual;
++	hydro_allocate_message_msg.allocator_saturation_mask = allocation_solution.status.saturation_mask;
++	hydro_allocate_message_msg.allocator_solve_status = static_cast<uint8_t>(allocation_solution.status.solve_status);
++	hydro_allocate_message_msg.jacobian_condition = allocation_solution.status.jacobian_condition;
++	hydro_allocate_message_msg.u_phi_effective_model = forward_result.u_phi_effective_model;
++	hydro_allocate_message_msg.u_effective_is_model_based = true;
++	hydro_allocate_message_msg.foil_position_feedback_available = false;
++	hydro_allocate_message_msg.g_left = linearization.g_left;
++	hydro_allocate_message_msg.g_right = linearization.g_right;
++	hydro_allocate_message_msg.logical_left_servo_index = _params.hy_sv_idx[0] - 1;
++	hydro_allocate_message_msg.logical_right_servo_index = _params.hy_sv_idx[1] - 1;
++	hydro_allocate_message_msg.logical_mapping_matches_expected =
++		(hydro_allocate_message_msg.logical_left_servo_index == 4)
++		&& (hydro_allocate_message_msg.logical_right_servo_index == 3);
+ 
+ 	//归一化，并再次限幅确保安全
+ 	x[0][0] = math::constrain(x[0][0] / _param_hy_wing_max_a.get(), -1.f, 1.f);
+@@ -578,8 +502,8 @@ void HydroAllocator::Run()
+ 	}
+ 	foil_aux *= _param_hy_foil_auxgain.get();
+ 
+-	float man_delta_motor = torque_vector(2) * _param_hy_alct_yaw_man.get();
+-	float man_delta_servo = torque_vector(0) * _param_hy_alct_rol_man.get();
++	float man_delta_motor = allocation_command.u_psi * _param_hy_alct_yaw_man.get();
++	float man_delta_servo = allocation_command.u_phi * _param_hy_alct_rol_man.get();
+ 	float man_manual_motor = (_manual_control_setpoint.throttle+1)*0.5f * _param_hy_alct_mt_man.get();
+ 	float man_manual_servo = _manual_control_setpoint.pitch * _param_hy_alct_sv_man.get();
+ 
+@@ -588,7 +512,17 @@ void HydroAllocator::Run()
+ 	hydro_allocate_message_msg.man_manual_motor = man_manual_motor;
+ 	hydro_allocate_message_msg.man_manual_servo = man_manual_servo;
+ 
+-	if(foil_aux > _param_hy_foil_thr.get() && (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_MANUAL))
++	const bool foil_gate_enabled = foil_aux > _param_hy_foil_thr.get()
++		&& (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB
++		    || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO
++		    || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_MANUAL);
++	hydro_allocate_message_msg.foil_gate_enabled = foil_gate_enabled;
++	hydro_allocate_message_msg.foil_aux_parameter = _param_hy_foil_aux.get();
++	hydro_allocate_message_msg.foil_threshold_parameter = _param_hy_foil_thr.get();
++	hydro_allocate_message_msg.allocate_mode_parameter = _param_hy_allocate_mode.get();
++	hydro_allocate_message_msg.wing_max_angle_parameter = _param_hy_wing_max_a.get();
++
++	if (foil_gate_enabled)
+ 	{
+ 		int32_t allocate_mode = _param_hy_allocate_mode.get();
+ 		if(allocate_mode == 0){
+@@ -598,11 +532,11 @@ void HydroAllocator::Run()
+ 			hydro_servos_msg.control[_params.hy_sv_idx[0] - 1] = x[0][0];
+ 			hydro_servos_msg.control[_params.hy_sv_idx[1] - 1] = x[1][0];
+ 		}
+-		else if(allocate_mode == 1){
+-			hydro_motors_msg.control[_params.hy_rt_idx[0] - 1] =
+-				math::constrain(thrust_x[0] / _param_hy_rt_max_thrust.get(), 0.f, 1.f);
+-			hydro_motors_msg.control[_params.hy_rt_idx[1] - 1] =
+-				math::constrain(thrust_x[1] / _param_hy_rt_max_thrust.get(), 0.f, 1.f);
++			else if(allocate_mode == 1){
++				hydro_motors_msg.control[_params.hy_rt_idx[0] - 1] =
++					math::constrain(allocation_solution.virtual_forces_commanded(0) / _param_hy_rt_max_thrust.get(), 0.f, 1.f);
++				hydro_motors_msg.control[_params.hy_rt_idx[1] - 1] =
++					math::constrain(allocation_solution.virtual_forces_commanded(2) / _param_hy_rt_max_thrust.get(), 0.f, 1.f);
+ 
+ 			hydro_servos_msg.control[_params.hy_sv_idx[0] - 1] = _param_hy_sv_l_fm.get();
+ 			hydro_servos_msg.control[_params.hy_sv_idx[1] - 1] = _param_hy_sv_r_fm.get();
+diff --git a/src/modules/hydro_allocator/HydroAllocator.hpp b/src/modules/hydro_allocator/HydroAllocator.hpp
+index afb812ce7b..28b31d72a4 100644
+--- a/src/modules/hydro_allocator/HydroAllocator.hpp
++++ b/src/modules/hydro_allocator/HydroAllocator.hpp
+@@ -56,6 +56,7 @@
+ #include <drivers/drv_hrt.h>
+ 
+ #include <lib/matrix/matrix/math.hpp>
++#include <lib/hydrofoil_allocation/HydrofoilAllocationModel.hpp>
+ 
+ using namespace time_literals;
+ using namespace matrix;
+@@ -84,19 +85,6 @@ private:
+ 	hrt_abstime _last_run{0};
+ 	float _foldwing_sp{0};
+ 
+-	struct NfParams {
+-		float KL;
+-		float v2; // v**2
+-		float alpha0;
+-		float Fx;
+-		float Fz;
+-	};
+-	NfParams _nf_params;
+-
+-	Vector2f func(Vector2f x, NfParams p);
+-	SquareMatrix<float, 2> J_func(Vector2f x, NfParams p);
+-	void optim(float x_array[2], NfParams p);
+-
+ 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
+ 
+ 	uORB::SubscriptionCallbackWorkItem 	_hydro_torque_setpoint_sub{this, ORB_ID(hydro_torque_setpoint)};
+diff --git a/src/modules/hydro_rate_control/CMakeLists.txt b/src/modules/hydro_rate_control/CMakeLists.txt
+index 99277aee16..95ea6a784a 100644
+--- a/src/modules/hydro_rate_control/CMakeLists.txt
++++ b/src/modules/hydro_rate_control/CMakeLists.txt
+@@ -31,6 +31,13 @@
+ #
+ ############################################################################
+ 
++px4_add_library(SafeRollController
++	SafeRollController.cpp
++	SafeRollController.hpp
++)
++target_include_directories(SafeRollController PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
++target_link_libraries(SafeRollController PRIVATE perf mathlib)
++
+ px4_add_module(
+ 	MODULE modules__hydro_rate_control
+ 	MAIN hydro_rate_control
+@@ -42,5 +49,6 @@ px4_add_module(
+ 	DEPENDS
+ 		px4_work_queue
+ 		RateControl
++		SafeRollController
+ 		SlewRate
+-	)
++)
+diff --git a/src/modules/hydro_rate_control/HydroRateControl.cpp b/src/modules/hydro_rate_control/HydroRateControl.cpp
+index cf752037d0..ffa5ae09e3 100644
+--- a/src/modules/hydro_rate_control/HydroRateControl.cpp
++++ b/src/modules/hydro_rate_control/HydroRateControl.cpp
+@@ -168,19 +168,27 @@ void HydroRateControl::Run()
+ 		Vector3f rates(vehicle_angular_velocity.xyz);
+ 		Vector3f angular_accel{vehicle_angular_velocity.xyz_derivative};
+ 
+-		_vehicle_status_sub.update(&_vehicle_status);
++			_vehicle_status_sub.update(&_vehicle_status);
++			_hydro_allocate_message_sub.update(&_hydro_allocate_message);
+ 
+ // --------------------是否切换模式进入stab，是则reset--------------------------------------------------------------
+ 		// detect transition into STAB (edge)
+-		const bool entered_stab =
+-		(_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB) &&
+-		(_prev_nav_state != vehicle_status_s::NAVIGATION_STATE_STAB);
++			const bool entered_stab =
++			(_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB) &&
++			(_prev_nav_state != vehicle_status_s::NAVIGATION_STATE_STAB);
++			const bool exited_stab =
++			(_vehicle_status.nav_state != vehicle_status_s::NAVIGATION_STATE_STAB) &&
++			(_prev_nav_state == vehicle_status_s::NAVIGATION_STATE_STAB);
+ 
+ 		if (entered_stab) {
+ 		// reset CADRC (and optionally other integrators)
+ 		_cadrc_roll.reset();
+-		_cadrc_pitch.reset();
+-		}
++			_cadrc_pitch.reset();
++			}
++
++			if (entered_stab || exited_stab) {
++				_safe_roll_controller.reset();
++			}
+ 		// update previous nav state
+ 		_prev_nav_state = _vehicle_status.nav_state;
+ 
+@@ -230,8 +238,9 @@ void HydroRateControl::Run()
+ 
+ 			//CADRC算法增加部分-------------开始
+ 			// 读取姿态角（实时角度 P）
+-			_vehicle_attitude_sub.update(&_vehicle_attitude);
+-			Eulerf euler_angles(Quatf(_vehicle_attitude.q));
++				_vehicle_attitude_sub.update(&_vehicle_attitude);
++				const Quatf attitude_quaternion(_vehicle_attitude.q);
++				Eulerf euler_angles(attitude_quaternion);
+ 
+ 			const float roll  = euler_angles.phi();    // rad
+ 			const float pitch = euler_angles.theta();  // rad
+@@ -287,13 +296,84 @@ void HydroRateControl::Run()
+ 				float u_yaw = math::constrain(_manual_control_setpoint.yaw * _param_hy_man_y_sc.get()
+ 								+ _param_trim_yaw.get(), -1.f, 1.f);
+ 
+-				// 加 trim（保持与原框架一致）
+-				u_roll  = math::constrain(u_roll  + _param_trim_roll.get(),  -1.f, 1.f);
+-				u_pitch = math::constrain(u_pitch + _param_trim_pitch.get(), -1.f, 1.f);
+-				_hydro_cadrc_control_message.roll_z21 = _cadrc_roll._Z2(0,0);
++					// 加 trim（保持与原框架一致）
++					u_roll  = math::constrain(u_roll  + _param_trim_roll.get(),  -1.f, 1.f);
++					u_pitch = math::constrain(u_pitch + _param_trim_pitch.get(), -1.f, 1.f);
++					const float legacy_u_roll = u_roll;
++					SafeRollController::Input safe_roll_input{};
++					safe_roll_input.now = hrt_absolute_time();
++					safe_roll_input.angular_velocity_timestamp_sample = vehicle_angular_velocity.timestamp_sample;
++					safe_roll_input.attitude_timestamp = _vehicle_attitude.timestamp;
++					safe_roll_input.requested_mode = static_cast<uint8_t>(_param_hy_sr_mode.get());
++					safe_roll_input.armed = _vehicle_status.arming_state == vehicle_status_s::ARMING_STATE_ARMED;
++					safe_roll_input.in_stab = true;
++					safe_roll_input.quaternion_finite = attitude_quaternion.isAllFinite();
++					safe_roll_input.angular_velocity_finite = rates.isAllFinite();
++					safe_roll_input.allocator_valid = _hydro_allocate_message.allocator_valid;
++					safe_roll_input.foil_gate_enabled = _hydro_allocate_message.foil_gate_enabled;
++					safe_roll_input.logical_mapping_valid = _hydro_allocate_message.logical_mapping_matches_expected;
++					safe_roll_input.attitude_reset_counter = _vehicle_attitude.quat_reset_counter;
++					safe_roll_input.manual_roll = _manual_control_setpoint.roll;
++					safe_roll_input.phi_sp = roll_sp;
++					safe_roll_input.phi = roll;
++					safe_roll_input.p = p;
++					safe_roll_input.legacy_u_roll = legacy_u_roll;
++
++					const hrt_abstime safe_roll_start = hrt_absolute_time();
++					SafeRollController::Output safe_roll_output{};
++
++					// Mode 0 is a direct legacy path: no candidate safe controller is evaluated.
++					if (safe_roll_input.requested_mode == static_cast<uint8_t>(SafeRollController::Mode::Legacy)) {
++						safe_roll_output = _safe_roll_controller.observeLegacy(safe_roll_input);
++
++					} else {
++						safe_roll_output = _safe_roll_controller.update(safe_roll_input);
++					}
++
++					u_roll = safe_roll_output.u_selected;
++					const uint32_t safe_roll_cycle_time_us = hrt_elapsed_time(&safe_roll_start);
++
++					if (safe_roll_input.requested_mode != _previous_safe_roll_requested_mode) {
++						if (safe_roll_input.requested_mode != static_cast<uint8_t>(SafeRollController::Mode::Legacy)) {
++							if (safe_roll_output.result == SafeRollController::Result::FoilGateDisabled) {
++								PX4_WARN("HY_SR_MODE %u rejected: hydrofoil gate disabled; legacy active",
++									 unsigned(safe_roll_input.requested_mode));
++
++							} else if (safe_roll_output.result == SafeRollController::Result::LogicalMappingInvalid) {
++								PX4_WARN("HY_SR_MODE %u rejected: expected logical L/R on Servo5/4; legacy active",
++									 unsigned(safe_roll_input.requested_mode));
++
++							} else {
++								PX4_WARN("HY_SR_MODE %u is framework-only; falling back to legacy",
++									 unsigned(safe_roll_input.requested_mode));
++							}
++						}
++
++						_previous_safe_roll_requested_mode = safe_roll_input.requested_mode;
++					}
++
++					_hydro_cadrc_control_message.roll_z21 = _cadrc_roll._Z2(0,0);
+ 				_hydro_cadrc_control_message.roll_z22 = _cadrc_roll._Z2(1,0);
+ 				_hydro_cadrc_control_message.pitch_z21 = _cadrc_pitch._Z2(0,0);
+-				_hydro_cadrc_control_message.pitch_z22 = _cadrc_pitch._Z2(1,0);
++					_hydro_cadrc_control_message.pitch_z22 = _cadrc_pitch._Z2(1,0);
++					_hydro_cadrc_control_message.timestamp = hrt_absolute_time();
++					_hydro_cadrc_control_message.timestamp_sample = vehicle_angular_velocity.timestamp_sample;
++					_hydro_cadrc_control_message.depth_setpoint = _param_hy_dc_sp.get();
++					_hydro_cadrc_control_message.requested_mode = safe_roll_output.requested_mode;
++					_hydro_cadrc_control_message.active_mode = safe_roll_output.active_mode;
++					_hydro_cadrc_control_message.reset_count = safe_roll_output.reset_count;
++					_hydro_cadrc_control_message.fault_flags = safe_roll_output.fault_flags;
++					_hydro_cadrc_control_message.healthy = safe_roll_output.healthy;
++					_hydro_cadrc_control_message.fallback_active = safe_roll_output.fallback_active;
++					_hydro_cadrc_control_message.dt_raw = safe_roll_output.dt_raw;
++					_hydro_cadrc_control_message.dt_used = safe_roll_output.dt_used;
++					_hydro_cadrc_control_message.manual_roll = _manual_control_setpoint.roll;
++					_hydro_cadrc_control_message.phi = roll;
++					_hydro_cadrc_control_message.p = p;
++					_hydro_cadrc_control_message.u_legacy = legacy_u_roll;
++					_hydro_cadrc_control_message.u_nominal = safe_roll_output.u_nominal;
++					_hydro_cadrc_control_message.u_selected = u_roll;
++					_hydro_cadrc_control_message.cycle_time_us = safe_roll_cycle_time_us;
+ 
+ 				_hydro_torque_setpoint.xyz[0] = u_roll;
+ 				_hydro_torque_setpoint.xyz[1] = u_pitch;
+diff --git a/src/modules/hydro_rate_control/HydroRateControl.hpp b/src/modules/hydro_rate_control/HydroRateControl.hpp
+index 95b744b98e..e08b420f6c 100644
+--- a/src/modules/hydro_rate_control/HydroRateControl.hpp
++++ b/src/modules/hydro_rate_control/HydroRateControl.hpp
+@@ -77,7 +77,9 @@
+ #include <uORB/topics/hydro_depth_control_message.h>
+ 
+ #include <uORB/topics/hydro_cadrc_control_message.h>
++#include <uORB/topics/hydro_allocate_message.h>
+ #include "CADRC.h"
++#include "SafeRollController.hpp"
+ 
+ using matrix::Eulerf;
+ using matrix::Quatf;
+@@ -121,6 +123,7 @@ private:
+ 	uORB::Subscription _debug_vect_sub{ORB_ID(debug_vect)};
+ 	uORB::Subscription _vehicle_air_data_sub{ORB_ID(vehicle_air_data)};
+ 	uORB::Subscription _depth_estimated_sub{ORB_ID(depth_estimated)};
++	uORB::Subscription _hydro_allocate_message_sub{ORB_ID(hydro_allocate_message)};
+ 
+ 	uORB::Publication<vehicle_rates_setpoint_s>	_rate_sp_pub{ORB_ID(hydro_rates_setpoint)};
+ 	uORB::Publication<vehicle_torque_setpoint_s>	_hydro_torque_setpoint_pub{ORB_ID(hydro_torque_setpoint)};
+@@ -141,6 +144,7 @@ private:
+ 	hydro_depth_control_message_s		_hydro_depth_control_message{};
+ 
+ 	hydro_cadrc_control_message_s		_hydro_cadrc_control_message{};
++	hydro_allocate_message_s		_hydro_allocate_message{};
+ 
+ 	//水翼部分的setpoint
+ 	vehicle_thrust_setpoint_s		_hydro_thrust_setpoint{};
+@@ -161,7 +165,9 @@ private:
+ 	//CADRC算法部分
+ 	ADRCController _cadrc_roll{};
+ 	ADRCController _cadrc_pitch{};
++	SafeRollController _safe_roll_controller{};
+ 	uint8_t _prev_nav_state{vehicle_status_s::NAVIGATION_STATE_MAX};
++	uint8_t _previous_safe_roll_requested_mode{0};
+ 
+ 
+ 	DEFINE_PARAMETERS(
+@@ -253,7 +259,11 @@ private:
+ 		(ParamFloat<px4::params::HY_CADRC_TAU>) _param_hy_cadrc_tau,
+ 		(ParamFloat<px4::params::HY_CADRC_U_SCALE>) _param_hy_cadrc_u_scale,
+ 		(ParamFloat<px4::params::HY_ROLL_MAX>) _param_hy_roll_max,
+-		(ParamFloat<px4::params::HY_PITCH_MAX>) _param_hy_pitch_max,
++			(ParamFloat<px4::params::HY_PITCH_MAX>) _param_hy_pitch_max,
++			(ParamInt<px4::params::HY_SR_MODE>) _param_hy_sr_mode,
++			(ParamFloat<px4::params::HY_SR_DMAX>) _param_hy_sr_dmax,
++			(ParamFloat<px4::params::HY_SR_DRATE>) _param_hy_sr_drate,
++			(ParamFloat<px4::params::HY_SR_DREM>) _param_hy_sr_drem,
+ 
+ 
+ 
+diff --git a/src/modules/hydro_rate_control/hydro_rate_control_params.c b/src/modules/hydro_rate_control/hydro_rate_control_params.c
+index 88d6bbd75d..3b562f368b 100644
+--- a/src/modules/hydro_rate_control/hydro_rate_control_params.c
++++ b/src/modules/hydro_rate_control/hydro_rate_control_params.c
+@@ -132,6 +132,56 @@ PARAM_DEFINE_FLOAT(HY_ROLL_MAX, 30.0f);
+  */
+ PARAM_DEFINE_FLOAT(HY_PITCH_MAX, 20.0f);
+ 
++/**
++ * Safe-roll operating mode
++ *
++ * Modes 1 through 4 are framework-only in Phase 1 and fall back to legacy.
++ *
++ * @value 0 Legacy CADRC
++ * @value 1 Nominal framework
++ * @value 2 Worst-case fixed DE-HOCBF framework
++ * @value 3 Proposed framework
++ * @value 4 No-allocation ablation framework
++ * @group HY Safe Roll
++ */
++PARAM_DEFINE_INT32(HY_SR_MODE, 0);
++
++/**
++ * Safe-roll commanded hydrofoil angle limit
++ *
++ * This limits commanded/predicted state only and is not position feedback.
++ * It is only used by modes 1 through 4.
++ *
++ * @unit deg
++ * @min 0.0
++ * @max 65.0
++ * @group HY Safe Roll
++ */
++PARAM_DEFINE_FLOAT(HY_SR_DMAX, 35.0f);
++
++/**
++ * Safe-roll commanded hydrofoil rate limit
++ *
++ * This limits commanded/predicted state only and is not position feedback.
++ * It is only used by modes 1 through 4.
++ *
++ * @unit deg/s
++ * @min 0.0
++ * @group HY Safe Roll
++ */
++PARAM_DEFINE_FLOAT(HY_SR_DRATE, 90.0f);
++
++/**
++ * Safe-roll allocator local-model remainder margin
++ *
++ * This margin applies to commanded/predicted hydrofoil angle.
++ *
++ * @unit rad
++ * @min 0.0
++ * @group HY Safe Roll
++ */
++PARAM_DEFINE_FLOAT(HY_SR_DREM, 0.05f);
++
+ 
+ 
+ 
+@@ -762,4 +812,3 @@ PARAM_DEFINE_FLOAT(HY_HSMC_IMIN, -20.0f);
+ PARAM_DEFINE_FLOAT(HY_MAN_RATIO, 0.0f);
+ //手动模式下纵向力的比率
+ 
+-
+diff --git a/src/modules/logger/logged_topics.cpp b/src/modules/logger/logged_topics.cpp
+index 399f20e5a9..3377cc1412 100644
+--- a/src/modules/logger/logged_topics.cpp
++++ b/src/modules/logger/logged_topics.cpp
+@@ -61,6 +61,7 @@ void LoggedTopics::add_default_topics()
+ 	add_topic("hydro_tilt_message");
+ 
+ 	add_topic("hydro_cadrc_control_message", 0);
++	add_topic("haar_safe_roll_status", 0);
+ 
+ 	// USER TOPIC END
+ 	add_topic("action_request");

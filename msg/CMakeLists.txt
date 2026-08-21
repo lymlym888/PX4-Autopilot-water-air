@@ -255,6 +255,13 @@ set(msg_files
 	DepthFusion.msg
 	DepthEstimated.msg
 	HydroAllocateMessage.msg
+	HaarSafeRollStatus.msg
+	HaarSafeRollEstimatorStatus.msg
+	HaarSafeRollFieldStatus.msg
+	HaarSafeRollFaultSnapshot.msg
+	HaarSafeRollGateStatus.msg
+	HaarDepthControlStatus.msg
+	HaarDepthAllocatorStatus.msg
 	HydroDepthControlMessage.msg
 	HydroTiltMessage.msg
 	WaterLevel.msg

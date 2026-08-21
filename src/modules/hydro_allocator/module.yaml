@@ -236,12 +236,18 @@ parameters:
     #控制分配的模式
     HY_ALLOCATE_MODE:
       description:
-        short: allocate mode
+        short: Hydro allocation experiment branch
+        long: |
+          Normal selects the complete nonlinear allocation. Fixed and Manual are
+          legacy comparison branches used only by strict SafeRoll code 4.
+          SafeRoll codes 0 through 3 always keep the complete executable
+          allocation so force-z, pitch/yaw and both thruster commands are not
+          discarded.
       type: enum
       values:
-        0: Normal Mode
-        1: Fixed Mode
-        2: Manual Mode
+        0: Complete nonlinear allocation
+        1: Legacy fixed comparison
+        2: Legacy manual comparison
       default: 0
 
     HY_SV_L_FM:

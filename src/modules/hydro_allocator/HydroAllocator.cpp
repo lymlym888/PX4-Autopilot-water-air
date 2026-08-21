@@ -38,6 +38,18 @@
 using namespace time_literals;
 using namespace matrix;
 
+namespace
+{
+enum GateCloseReason : uint8_t {
+	GateReasonNone = 0,
+	GateReasonAuxThreshold = 1,
+	GateReasonNavState = 2,
+	GateReasonAuxNonfinite = 3,
+	GateReasonAuxStale = 4,
+	GateReasonConfigInvalid = 5
+};
+}
+
 HydroAllocator::HydroAllocator() :
 	ModuleParams(nullptr),
 	ScheduledWorkItem(MODULE_NAME, px4::wq_configurations::rate_ctrl),
@@ -127,70 +139,6 @@ HydroAllocator::parameters_update(bool force)
 	}
 }
 
-//待优化求解的方程，优化求解的目标就是让这个方程等于0
-Vector2f HydroAllocator::func(Vector2f x, NfParams p)
-{
-	float alpha = x(0);
-	float T = x(1);
-
-	Vector2f out;
-
-	out(0) = p.Fx - p.KL*p.v2*(alpha+p.alpha0)*std::sin(p.alpha0) - T*std::cos(alpha);
-	out(1) = p.Fz + p.KL*p.v2*(alpha+p.alpha0)*std::cos(p.alpha0) + T*std::sin(alpha);
-
-	return out;
-}
-
-//待优化方程的雅可比矩阵
-SquareMatrix<float, 2> HydroAllocator::J_func(Vector2f x, NfParams p)
-{
-	float alpha = x(0);
-	float T = x(1);
-
-	SquareMatrix<float, 2> J;
-
-	J(0, 0) = -p.KL*p.v2*std::sin(p.alpha0) + T*std::sin(alpha);
-	J(0, 1) = -std::cos(alpha);
-	J(1, 0) = p.KL*p.v2*std::cos(p.alpha0) + T*std::cos(alpha);
-	J(1, 1) = std::sin(alpha);
-
-	return J;
-}
-
-//使用牛顿法优化求解
-void HydroAllocator::optim(float x_array[2], NfParams p)
-{
-	Vector2f x(x_array);
-	SquareMatrix<float, 2> J;
-	Vector2f func_out;
-	SquareMatrix<float, 2> J_inv;
-	Vector2f delta_x;
-	Vector2f x_new;
-
-	for(int i=0; i<10; i++)
-	{
-		J = J_func(x, p);
-		func_out = func(x, p);
-
-		inv(J, J_inv);
-
-		delta_x = - J_inv * func_out;
-
-		if(delta_x.norm_squared() < (float)1e-6)
-			break;
-
-		x_new = x + delta_x;
-
-		x_new(0) = math::constrain(x_new(0), - _param_hy_wing_max_a.get(), _param_hy_wing_max_a.get());
-		float x1_max = math::constrain(_param_hy_th_max_gain.get() * (_manual_control_setpoint.throttle+1)*0.5f, 0.f, 1.f) * _param_hy_rt_max_thrust.get();
-		x_new(1) = math::constrain(x_new(1), 0.f, x1_max);
-
-		x = x_new;
-	}
-
-	x.copyTo(x_array);
-}
-
 void HydroAllocator::Run()
 {
 	if (should_exit()) {
@@ -215,6 +163,8 @@ void HydroAllocator::Run()
 	_manual_control_setpoint_sub.copy(&_manual_control_setpoint);
 
 	_vehicle_status_sub.update(&_vehicle_status);
+	_rc_channels_sub.update(&_rc_channels);
+	_input_rc_sub.update(&_input_rc);
 
 	_vehicle_attitude_sub.copy(&_vehicle_attitude);
 	Eulerf euler_angles(Quatf(_vehicle_attitude.q));
@@ -302,14 +252,7 @@ void HydroAllocator::Run()
 
 
 	hydro_allocate_message_s hydro_allocate_message_msg{0};
-
-	//0是左边，1是右边
-	float thrust_x[2];
-	float thrust_z[2];
-	thrust_x[0] = _hydro_thrust_setpoint_msg.xyz[0] / 2;
-	thrust_x[1] = thrust_x[0];
-	thrust_z[0] = _hydro_thrust_setpoint_msg.xyz[2] / 2;
-	thrust_z[1] = thrust_z[0];
+	haar_depth_allocator_status_s depth_allocator_status{};
 
 	//执行器顺序：x0 z0 x1 z1
 	//力矩顺序：  rol pit yaw
@@ -320,86 +263,163 @@ void HydroAllocator::Run()
 		{_params.hy_vzrt_rol_r[1], _params.hy_vzrt_pit_r[1], _params.hy_vzrt_yaw_r[1]}
 	};
 
-	//计算torque_setpoint导致的各虚拟执行器的期望推力变化量
-	Matrix<float, 4, 3> allocate_matrix(allocate_matrix_array);
-	Vector3f torque_vector(_hydro_torque_setpoint_msg.xyz);
-	Vector4f delta_force_vector;
+	hydrofoil::AllocationContext allocation_context{};
+	allocation_context.body_pitch = euler_angles.theta();
+	allocation_context.lift_coefficient = _param_hy_wing_kl.get();
+	allocation_context.max_hydrofoil_angle = _param_hy_wing_max_a.get();
+	allocation_context.max_thruster_thrust = _param_hy_rt_max_thrust.get();
+	allocation_context.available_thruster_thrust = math::constrain(_param_hy_th_max_gain.get()
+			* (_manual_control_setpoint.throttle + 1.f) * 0.5f, 0.f, 1.f) * _param_hy_rt_max_thrust.get();
+	allocation_context.virtual_control_matrix = Matrix<float, 4, 3>(allocate_matrix_array);
 
-	delta_force_vector = allocate_matrix * torque_vector;
+	debug_vect_s debug_vect_msg{};
+	const bool new_speed_sample = _debug_vect_sub.update(&debug_vect_msg);
+	const uint64_t speed_sample_timestamp =
+		new_speed_sample && debug_vect_msg.timestamp != 0 ? debug_vect_msg.timestamp : now;
+	const hydrofoil::SpeedContextCache::Result speed_context = _speed_context_cache.update(
+			_param_hy_speed_select.get() != 0, _param_hy_alt_speed.get(), now,
+			new_speed_sample, speed_sample_timestamp, debug_vect_msg.z);
+	allocation_context.speed_squared = speed_context.speed_squared;
 
-	thrust_x[0] += delta_force_vector(0);
-	thrust_z[0] += delta_force_vector(1);
-	thrust_x[1] += delta_force_vector(2);
-	thrust_z[1] += delta_force_vector(3);
+	hydrofoil::AllocationCommand allocation_command{};
+	allocation_command.force_x = _hydro_thrust_setpoint_msg.xyz[0];
+	allocation_command.force_z = _hydro_thrust_setpoint_msg.xyz[2];
+	allocation_command.u_phi = _hydro_torque_setpoint_msg.xyz[0];
+	allocation_command.u_theta = _hydro_torque_setpoint_msg.xyz[1];
+	allocation_command.u_psi = _hydro_torque_setpoint_msg.xyz[2];
+	const hydrofoil::AllocationSolution allocation_solution =
+		hydrofoil::HydrofoilAllocationModel::solve(allocation_context, allocation_command);
+	const hydrofoil::AllocationLinearization linearization =
+		hydrofoil::HydrofoilAllocationModel::linearize(allocation_context, allocation_solution);
+	const bool allocator_bounded =
+		hydrofoil::HydrofoilAllocationModel::isFiniteBounded(allocation_context, allocation_solution);
+	const int32_t safe_roll_mode = _param_hy_sr_mode.get();
+	// HEAD 5ae2fd95 emitted every finite constrained Newton iterate. Preserve
+	// that complete-vector behavior for legacy and operational SafeRoll modes;
+	// Mode 4 retains its deliberately strict allocator semantics.
+	const bool bounded_best_feasible_allowed = safe_roll_mode >= 0 && safe_roll_mode <= 3;
+	const hydrofoil::ExecutableAllocation executable =
+		hydrofoil::HydrofoilAllocationModel::selectExecutable(
+			allocation_context, allocation_solution, bounded_best_feasible_allowed,
+			_previous_executed_delta_left, _previous_executed_delta_right,
+			math::radians(_param_hy_sr_drate.get()), dt);
+	const hydrofoil::AllocationSolution &executed_solution =
+		executable.usable ? executable.solution : allocation_solution;
+	const hydrofoil::AllocationForwardResult forward_result =
+		hydrofoil::HydrofoilAllocationModel::forward(allocation_context, executed_solution);
 
-	hydro_allocate_message_msg.thrust_xz_control[0] = thrust_x[0];
-	hydro_allocate_message_msg.thrust_xz_control[1] = thrust_z[0];
-	hydro_allocate_message_msg.thrust_xz_control[2] = thrust_x[1];
-	hydro_allocate_message_msg.thrust_xz_control[3] = thrust_z[1];
-
-	//避免thrust_x为负，因为这可能导致优化求解出问题
-	float sum_thrust_x = thrust_x[0] + thrust_x[1];
-	if(sum_thrust_x < 0)
-	{
-		sum_thrust_x *= 0.5f;
-		thrust_x[0] -= sum_thrust_x;
-		thrust_x[1] -= sum_thrust_x;
-	}
-	if(thrust_x[0] < 0)
-	{
-		thrust_x[1] += thrust_x[0];
-		thrust_x[0] = 0;
-	}
-	else if(thrust_x[1] < 0)
-	{
-		thrust_x[0] += thrust_x[1];
-		thrust_x[1] = 0;
-	}
-
-	hydro_allocate_message_msg.thrust_xz_limited[0] = thrust_x[0];
-	hydro_allocate_message_msg.thrust_xz_limited[1] = thrust_z[0];
-	hydro_allocate_message_msg.thrust_xz_limited[2] = thrust_x[1];
-	hydro_allocate_message_msg.thrust_xz_limited[3] = thrust_z[1];
-
-	//定义待优化求解的变量，第一行是左侧水翼，第二行是右侧水翼，第一列是攻角，第二列是推力
-	//攻角的初始值为0，推力初始值为x方向期望推力的一半
-	float x[2][2] = {
-		{0, _hydro_thrust_setpoint_msg.xyz[0] / 2},
-		{0, _hydro_thrust_setpoint_msg.xyz[0] / 2}
+	float x[2][2] {
+		{executed_solution.delta_left_commanded, executed_solution.thrust_left_commanded},
+		{executed_solution.delta_right_commanded, executed_solution.thrust_right_commanded}
 	};
+	hydro_allocate_message_msg.allocator_delta_left_requested = allocation_solution.delta_left_commanded;
+	hydro_allocate_message_msg.allocator_delta_right_requested = allocation_solution.delta_right_commanded;
+	hydro_allocate_message_msg.allocator_thrust_left_requested = allocation_solution.thrust_left_commanded;
+	hydro_allocate_message_msg.allocator_thrust_right_requested = allocation_solution.thrust_right_commanded;
+	hydro_allocate_message_msg.allocator_output_suppressed = false;
+	depth_allocator_status.full_best_feasible_solution_used = executable.best_feasible;
+	depth_allocator_status.best_feasible_rate_limited = executable.rate_limited;
+	depth_allocator_status.depth_degradation_active = executable.best_feasible;
+	depth_allocator_status.depth_degradation_cumulative_time_us = _depth_degradation_cumulative_time_us;
 
-	//填入方程的参数
-	_nf_params.alpha0 = euler_angles.theta();
-	_nf_params.KL = _param_hy_wing_kl.get();
-
-	if(_param_hy_speed_select.get() == 0)//使用替代速度
-	{
-		_nf_params.v2 = _param_hy_alt_speed.get() * _param_hy_alt_speed.get();
+	if (!executable.usable) {
+		x[0][0] = 0.f;
+		x[1][0] = 0.f;
+		x[0][1] = 0.f;
+		x[1][1] = 0.f;
+		hydro_allocate_message_msg.allocator_output_suppressed = true;
 	}
-	else // 使用实际速度
-	{
-		debug_vect_s debug_vect_msg;
-		if(_debug_vect_sub.update(&debug_vect_msg))
-		{
-			float real_v2 = debug_vect_msg.z;
-			if(real_v2 < 1.0f)
-				real_v2 = 1.0f;	// 小于1时按照1来处理
-			_nf_params.v2 = real_v2;
-		}
+	depth_allocator_status.allocator_output_suppressed =
+		hydro_allocate_message_msg.allocator_output_suppressed;
+
+	if (allocation_solution.status.valid && allocator_bounded) {
+		_last_feasible_delta_left = allocation_solution.delta_left_commanded;
+		_last_feasible_delta_right = allocation_solution.delta_right_commanded;
+		_last_feasible_solution_valid = true;
 	}
 
-	//代入虚拟执行器的期望力，并进行优化求解
-	_nf_params.Fx = thrust_x[0];
-	_nf_params.Fz = thrust_z[0];
-	optim(x[0], _nf_params);
-	_nf_params.Fx = thrust_x[1];
-	_nf_params.Fz = thrust_z[1];
-	optim(x[1], _nf_params);
+	if (executable.usable) {
+		_previous_executed_delta_left = executed_solution.delta_left_commanded;
+		_previous_executed_delta_right = executed_solution.delta_right_commanded;
+	}
+
+	allocation_solution.virtual_forces_control.copyTo(hydro_allocate_message_msg.thrust_xz_control);
+	allocation_solution.virtual_forces_commanded.copyTo(hydro_allocate_message_msg.thrust_xz_limited);
 
 	hydro_allocate_message_msg.actuator_optimed[0] = x[0][0];
 	hydro_allocate_message_msg.actuator_optimed[1] = x[1][0];
 	hydro_allocate_message_msg.actuator_optimed[2] = x[0][1];
 	hydro_allocate_message_msg.actuator_optimed[3] = x[1][1];
+	hydro_allocate_message_msg.timestamp_sample = _hydro_torque_setpoint_msg.timestamp_sample;
+	hydro_allocate_message_msg.allocator_valid = allocation_solution.status.valid;
+	hydro_allocate_message_msg.allocator_converged = allocation_solution.status.converged;
+	hydro_allocate_message_msg.allocator_finite = allocation_solution.status.finite;
+	hydro_allocate_message_msg.allocator_bounded = allocator_bounded;
+	hydro_allocate_message_msg.allocator_iterations = allocation_solution.status.iterations;
+	hydro_allocate_message_msg.allocator_residual = allocation_solution.status.residual;
+	hydro_allocate_message_msg.allocator_saturation_mask = allocation_solution.status.saturation_mask;
+	hydro_allocate_message_msg.allocator_solve_status = static_cast<uint8_t>(allocation_solution.status.solve_status);
+	hydro_allocate_message_msg.jacobian_condition = allocation_solution.status.jacobian_condition;
+	hydro_allocate_message_msg.u_phi_effective_model = forward_result.u_phi_effective_model;
+	hydro_allocate_message_msg.u_effective_is_model_based = true;
+	hydro_allocate_message_msg.foil_position_feedback_available = false;
+	hydro_allocate_message_msg.g_left = linearization.g_left;
+	hydro_allocate_message_msg.g_right = linearization.g_right;
+	hydro_allocate_message_msg.logical_left_servo_index = _params.hy_sv_idx[0] - 1;
+	hydro_allocate_message_msg.logical_right_servo_index = _params.hy_sv_idx[1] - 1;
+	hydro_allocate_message_msg.logical_mapping_matches_expected =
+		(hydro_allocate_message_msg.logical_left_servo_index == 4)
+		&& (hydro_allocate_message_msg.logical_right_servo_index == 3);
+	hydro_allocate_message_msg.lift_coefficient = allocation_context.lift_coefficient;
+	hydro_allocate_message_msg.speed_squared = allocation_context.speed_squared;
+	hydro_allocate_message_msg.speed_context_cached = speed_context.cached;
+	hydro_allocate_message_msg.speed_context_stale = speed_context.stale;
+	hydro_allocate_message_msg.speed_context_age_us = speed_context.age_us;
+	hydro_allocate_message_msg.body_pitch = allocation_context.body_pitch;
+	hydro_allocate_message_msg.context_max_hydrofoil_angle = allocation_context.max_hydrofoil_angle;
+	hydro_allocate_message_msg.max_thruster_thrust = allocation_context.max_thruster_thrust;
+	hydro_allocate_message_msg.available_thruster_thrust = allocation_context.available_thruster_thrust;
+	allocation_context.virtual_control_matrix.copyTo(hydro_allocate_message_msg.virtual_control_matrix);
+	hydro_allocate_message_msg.command_force_x = allocation_command.force_x;
+	hydro_allocate_message_msg.command_force_z = allocation_command.force_z;
+	hydro_allocate_message_msg.command_u_phi = allocation_command.u_phi;
+	hydro_allocate_message_msg.command_u_theta = allocation_command.u_theta;
+	hydro_allocate_message_msg.command_u_psi = allocation_command.u_psi;
+	const hydrofoil::FoilCommandComponents requested_components =
+		hydrofoil::HydrofoilAllocationModel::decomposeFoilCommand(
+			allocation_solution.delta_left_commanded, allocation_solution.delta_right_commanded);
+	const hydrofoil::FoilCommandComponents realized_components =
+		hydrofoil::HydrofoilAllocationModel::decomposeFoilCommand(x[0][0], x[1][0]);
+	const hydrofoil::FoilCommandComponents last_feasible_components =
+		hydrofoil::HydrofoilAllocationModel::decomposeFoilCommand(
+			_last_feasible_delta_left, _last_feasible_delta_right);
+	depth_allocator_status.timestamp_sample = _hydro_torque_setpoint_msg.timestamp_sample;
+	depth_allocator_status.allocator_valid = allocation_solution.status.valid;
+	depth_allocator_status.allocator_converged = allocation_solution.status.converged;
+	depth_allocator_status.allocator_finite = allocation_solution.status.finite;
+	depth_allocator_status.allocator_bounded = allocator_bounded;
+	depth_allocator_status.allocator_residual = allocation_solution.status.residual;
+	depth_allocator_status.allocator_iterations = allocation_solution.status.iterations;
+	depth_allocator_status.allocator_saturation_mask = allocation_solution.status.saturation_mask;
+	depth_allocator_status.speed_squared = speed_context.speed_squared;
+	depth_allocator_status.speed_source = _param_hy_speed_select.get() == 0 ? 0 : 1;
+	depth_allocator_status.speed_context_stale = speed_context.stale;
+	depth_allocator_status.requested_force_z = allocation_command.force_z;
+	depth_allocator_status.realized_force_z =
+		forward_result.valid
+		? forward_result.virtual_forces_reconstructed(1) + forward_result.virtual_forces_reconstructed(3) : NAN;
+	depth_allocator_status.requested_symmetric_foil_component =
+		requested_components.valid ? requested_components.symmetric : NAN;
+	depth_allocator_status.realized_symmetric_foil_component =
+		realized_components.valid ? realized_components.symmetric : NAN;
+	depth_allocator_status.requested_differential_foil_component =
+		requested_components.valid ? requested_components.differential : NAN;
+	depth_allocator_status.realized_differential_foil_component =
+		realized_components.valid ? realized_components.differential : NAN;
+	depth_allocator_status.last_feasible_symmetric_foil_component =
+		_last_feasible_solution_valid && last_feasible_components.valid ? last_feasible_components.symmetric : NAN;
+	depth_allocator_status.last_feasible_differential_foil_component =
+		_last_feasible_solution_valid && last_feasible_components.valid ? last_feasible_components.differential : NAN;
 
 	//归一化，并再次限幅确保安全
 	x[0][0] = math::constrain(x[0][0] / _param_hy_wing_max_a.get(), -1.f, 1.f);
@@ -535,8 +555,9 @@ void HydroAllocator::Run()
 
 
 	//水翼启用与禁用功能
+	const int32_t foil_aux_parameter = _param_hy_foil_aux.get();
 	float foil_aux;
-	switch (_param_hy_foil_aux.get()) {
+	switch (foil_aux_parameter) {
 		case 0:
 		foil_aux = 0;
 		break;
@@ -577,46 +598,151 @@ void HydroAllocator::Run()
 		foil_aux = 0;
 	}
 	foil_aux *= _param_hy_foil_auxgain.get();
+	const bool aux_uses_manual_input = foil_aux_parameter >= 1 && foil_aux_parameter <= 6;
+	const bool gate_config_valid = foil_aux_parameter >= 0 && foil_aux_parameter <= 8
+				       && PX4_ISFINITE(_param_hy_foil_auxgain.get())
+				       && PX4_ISFINITE(_param_hy_foil_thr.get());
+	const bool aux_value_finite = PX4_ISFINITE(foil_aux);
+	const uint64_t manual_age_us =
+		_manual_control_setpoint.timestamp_sample != 0 && now >= _manual_control_setpoint.timestamp_sample
+		? now - _manual_control_setpoint.timestamp_sample : UINT64_MAX;
+	const uint64_t manual_timeout_us = static_cast<uint64_t>(
+			math::max(_param_com_rc_loss_t.get(), 0.f) * 1e6f);
+	int8_t foil_aux_rc_channel = 0;
+	bool foil_aux_mapping_valid = !aux_uses_manual_input;
 
-	float man_delta_motor = torque_vector(2) * _param_hy_alct_yaw_man.get();
-	float man_delta_servo = torque_vector(0) * _param_hy_alct_rol_man.get();
+	if (aux_uses_manual_input
+	    && _manual_control_setpoint.data_source == manual_control_setpoint_s::SOURCE_RC) {
+		const int function = rc_channels_s::FUNCTION_AUX_1 + foil_aux_parameter - 1;
+		const int channel = _rc_channels.function[function];
+		foil_aux_rc_channel = channel >= 0 ? static_cast<int8_t>(channel + 1) : 0;
+		foil_aux_mapping_valid = channel >= 0 && channel < _rc_channels.channel_count;
+
+	} else if (aux_uses_manual_input) {
+		foil_aux_mapping_valid =
+			_manual_control_setpoint.data_source != manual_control_setpoint_s::SOURCE_UNKNOWN;
+	}
+
+	const bool manual_data_fresh = !aux_uses_manual_input
+				       || (_manual_control_setpoint.valid
+					   && _manual_control_setpoint.timestamp_sample != 0
+					   && now >= _manual_control_setpoint.timestamp_sample
+					   && manual_age_us <= manual_timeout_us
+					   && foil_aux_mapping_valid);
+	const bool aux_gate_enabled_raw = gate_config_valid && aux_value_finite && manual_data_fresh
+					  && foil_aux > _param_hy_foil_thr.get();
+	const bool nav_gate_enabled_raw =
+		_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB
+		|| _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO
+		|| _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_MANUAL;
+	const bool foil_gate_enabled = aux_gate_enabled_raw && nav_gate_enabled_raw;
+	const int32_t allocate_mode = _param_hy_allocate_mode.get();
+	uint8_t gate_close_reason = GateReasonNone;
+
+	if (!gate_config_valid) {
+		gate_close_reason = GateReasonConfigInvalid;
+
+	} else if (!aux_value_finite) {
+		gate_close_reason = GateReasonAuxNonfinite;
+
+	} else if (!manual_data_fresh) {
+		gate_close_reason = GateReasonAuxStale;
+
+	} else if (!aux_gate_enabled_raw) {
+		gate_close_reason = GateReasonAuxThreshold;
+
+	} else if (!nav_gate_enabled_raw) {
+		gate_close_reason = GateReasonNavState;
+	}
+
+	float man_delta_motor = allocation_command.u_psi * _param_hy_alct_yaw_man.get();
+	float man_delta_servo = allocation_command.u_phi * _param_hy_alct_rol_man.get();
 	float man_manual_motor = (_manual_control_setpoint.throttle+1)*0.5f * _param_hy_alct_mt_man.get();
 	float man_manual_servo = _manual_control_setpoint.pitch * _param_hy_alct_sv_man.get();
+
+	hydrofoil::AllocationSolution legacy_fixed_solution{};
+	legacy_fixed_solution.delta_left_commanded =
+		math::constrain(_param_hy_sv_l_fm.get(), -1.f, 1.f) * allocation_context.max_hydrofoil_angle;
+	legacy_fixed_solution.delta_right_commanded =
+		math::constrain(_param_hy_sv_r_fm.get(), -1.f, 1.f) * allocation_context.max_hydrofoil_angle;
+	legacy_fixed_solution.thrust_left_commanded =
+		math::constrain(allocation_solution.virtual_forces_commanded(0), 0.f,
+				allocation_context.max_thruster_thrust);
+	legacy_fixed_solution.thrust_right_commanded =
+		math::constrain(allocation_solution.virtual_forces_commanded(2), 0.f,
+				allocation_context.max_thruster_thrust);
+
+	hydrofoil::AllocationSolution legacy_manual_solution{};
+	legacy_manual_solution.delta_left_commanded =
+		math::constrain(man_manual_servo + man_delta_servo, -1.f, 1.f)
+		* allocation_context.max_hydrofoil_angle;
+	legacy_manual_solution.delta_right_commanded =
+		math::constrain(man_manual_servo - man_delta_servo, -1.f, 1.f)
+		* allocation_context.max_hydrofoil_angle;
+	legacy_manual_solution.thrust_left_commanded =
+		math::constrain(man_manual_motor + man_delta_motor, 0.f, 1.f)
+		* allocation_context.max_thruster_thrust;
+	legacy_manual_solution.thrust_right_commanded =
+		math::constrain(man_manual_motor - man_delta_motor, 0.f, 1.f)
+		* allocation_context.max_thruster_thrust;
+
+	const hydrofoil::AllocationModeOutput mode_output =
+		hydrofoil::HydrofoilAllocationModel::selectAllocationModeOutput(
+			executable, allocate_mode, static_cast<uint8_t>(safe_roll_mode),
+			legacy_fixed_solution, legacy_manual_solution);
+	if (!mode_output.selected) {
+		hydro_allocate_message_msg.allocator_output_suppressed = true;
+		depth_allocator_status.allocator_output_suppressed = true;
+	}
+	const hydrofoil::FoilCommandComponents executable_components =
+		hydrofoil::HydrofoilAllocationModel::decomposeFoilCommand(
+			executed_solution.delta_left_commanded, executed_solution.delta_right_commanded);
+	const hydrofoil::FoilCommandComponents selected_components =
+		hydrofoil::HydrofoilAllocationModel::decomposeFoilCommand(
+			mode_output.solution.delta_left_commanded, mode_output.solution.delta_right_commanded);
 
 	hydro_allocate_message_msg.man_delta_motor = man_delta_motor;
 	hydro_allocate_message_msg.man_delta_servo = man_delta_servo;
 	hydro_allocate_message_msg.man_manual_motor = man_manual_motor;
 	hydro_allocate_message_msg.man_manual_servo = man_manual_servo;
 
-	if(foil_aux > _param_hy_foil_thr.get() && (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_MANUAL))
-	{
-		int32_t allocate_mode = _param_hy_allocate_mode.get();
-		if(allocate_mode == 0){
-			hydro_motors_msg.control[_params.hy_rt_idx[0] - 1] = x[0][1];
-			hydro_motors_msg.control[_params.hy_rt_idx[1] - 1] = x[1][1];
+	hydro_allocate_message_msg.foil_gate_enabled = foil_gate_enabled;
+	hydro_allocate_message_msg.aux_gate_enabled_raw = aux_gate_enabled_raw;
+	hydro_allocate_message_msg.nav_gate_enabled_raw = nav_gate_enabled_raw;
+	hydro_allocate_message_msg.aux_gate_data_valid = gate_config_valid && manual_data_fresh;
+	hydro_allocate_message_msg.aux_gate_value_finite = aux_value_finite;
+	hydro_allocate_message_msg.gate_close_reason = gate_close_reason;
+	hydro_allocate_message_msg.foil_aux_parameter = foil_aux_parameter;
+	hydro_allocate_message_msg.foil_aux_value = foil_aux;
+	hydro_allocate_message_msg.foil_threshold_parameter = _param_hy_foil_thr.get();
+	hydro_allocate_message_msg.foil_aux_rc_channel = foil_aux_rc_channel;
+	hydro_allocate_message_msg.foil_aux_mapping_valid = foil_aux_mapping_valid;
+	hydro_allocate_message_msg.manual_control_timestamp = _manual_control_setpoint.timestamp;
+	hydro_allocate_message_msg.manual_control_timestamp_sample = _manual_control_setpoint.timestamp_sample;
+	hydro_allocate_message_msg.manual_control_age_us =
+		static_cast<uint32_t>(math::min(manual_age_us, static_cast<uint64_t>(UINT32_MAX)));
+	hydro_allocate_message_msg.manual_control_data_source = _manual_control_setpoint.data_source;
+	hydro_allocate_message_msg.manual_control_valid = _manual_control_setpoint.valid;
+	hydro_allocate_message_msg.rc_signal_lost = _rc_channels.signal_lost;
+	hydro_allocate_message_msg.rc_failsafe = _input_rc.rc_failsafe;
+	hydro_allocate_message_msg.allocate_mode_parameter = _param_hy_allocate_mode.get();
+	hydro_allocate_message_msg.wing_max_angle_parameter = _param_hy_wing_max_a.get();
+	_last_foil_aux_value = foil_aux;
+	_last_foil_gate_enabled = foil_gate_enabled;
 
-			hydro_servos_msg.control[_params.hy_sv_idx[0] - 1] = x[0][0];
-			hydro_servos_msg.control[_params.hy_sv_idx[1] - 1] = x[1][0];
-		}
-		else if(allocate_mode == 1){
-			hydro_motors_msg.control[_params.hy_rt_idx[0] - 1] =
-				math::constrain(thrust_x[0] / _param_hy_rt_max_thrust.get(), 0.f, 1.f);
-			hydro_motors_msg.control[_params.hy_rt_idx[1] - 1] =
-				math::constrain(thrust_x[1] / _param_hy_rt_max_thrust.get(), 0.f, 1.f);
-
-			hydro_servos_msg.control[_params.hy_sv_idx[0] - 1] = _param_hy_sv_l_fm.get();
-			hydro_servos_msg.control[_params.hy_sv_idx[1] - 1] = _param_hy_sv_r_fm.get();
-		}
-		else{
-			hydro_motors_msg.control[_params.hy_rt_idx[0] - 1] =
-				math::constrain(man_manual_motor + man_delta_motor, 0.f, 1.f);
-			hydro_motors_msg.control[_params.hy_rt_idx[1] - 1] =
-				math::constrain(man_manual_motor - man_delta_motor, 0.f, 1.f);
-			hydro_servos_msg.control[_params.hy_sv_idx[0] - 1] =
-				math::constrain(man_manual_servo + man_delta_servo, -1.f, 1.f);
-			hydro_servos_msg.control[_params.hy_sv_idx[1] - 1] =
-				math::constrain(man_manual_servo - man_delta_servo, -1.f, 1.f);
-		}
+	if (foil_gate_enabled && mode_output.selected) {
+		hydro_motors_msg.control[_params.hy_rt_idx[0] - 1] =
+			math::constrain(mode_output.solution.thrust_left_commanded
+					/ allocation_context.max_thruster_thrust, 0.f, 1.f);
+		hydro_motors_msg.control[_params.hy_rt_idx[1] - 1] =
+			math::constrain(mode_output.solution.thrust_right_commanded
+					/ allocation_context.max_thruster_thrust, 0.f, 1.f);
+		hydro_servos_msg.control[_params.hy_sv_idx[0] - 1] =
+			math::constrain(mode_output.solution.delta_left_commanded
+					/ allocation_context.max_hydrofoil_angle, -1.f, 1.f);
+		hydro_servos_msg.control[_params.hy_sv_idx[1] - 1] =
+			math::constrain(mode_output.solution.delta_right_commanded
+					/ allocation_context.max_hydrofoil_angle, -1.f, 1.f);
 	}
 
 	//机翼的通道
@@ -636,8 +762,97 @@ void HydroAllocator::Run()
 	_hydro_motors_pub.publish(hydro_motors_msg);
 	_hydro_servos_pub.publish(hydro_servos_msg);
 
+	// Reconstruct what was actually published by the hydro allocator, including
+	// gate and allocation-mode effects. These are commanded/model-based values.
+	hydrofoil::AllocationSolution published_solution = allocation_solution;
+	published_solution.delta_left_commanded =
+		hydro_servos_msg.control[_params.hy_sv_idx[0] - 1] * _param_hy_wing_max_a.get();
+	published_solution.delta_right_commanded =
+		hydro_servos_msg.control[_params.hy_sv_idx[1] - 1] * _param_hy_wing_max_a.get();
+	published_solution.thrust_left_commanded =
+		hydro_motors_msg.control[_params.hy_rt_idx[0] - 1] * _param_hy_rt_max_thrust.get();
+	published_solution.thrust_right_commanded =
+		hydro_motors_msg.control[_params.hy_rt_idx[1] - 1] * _param_hy_rt_max_thrust.get();
+	const hydrofoil::FoilCommandComponents published_components =
+		hydrofoil::HydrofoilAllocationModel::decomposeFoilCommand(
+			published_solution.delta_left_commanded, published_solution.delta_right_commanded);
+	const hydrofoil::AllocationForwardResult published_forward =
+		hydrofoil::HydrofoilAllocationModel::forward(allocation_context, published_solution);
+	const bool complete_solution_selected =
+		mode_output.source == hydrofoil::AllocationOutputSource::CompleteExecutable;
+	depth_allocator_status.realized_symmetric_foil_component =
+		published_components.valid ? published_components.symmetric : NAN;
+	depth_allocator_status.realized_differential_foil_component =
+		published_components.valid ? published_components.differential : NAN;
+	depth_allocator_status.realized_force_z =
+		published_forward.valid
+		? published_forward.virtual_forces_reconstructed(1)
+		+ published_forward.virtual_forces_reconstructed(3) : NAN;
+	depth_allocator_status.allocate_mode = allocate_mode;
+	depth_allocator_status.executable_solution_selected =
+		mode_output.selected && complete_solution_selected;
+	depth_allocator_status.selected_solution_source =
+		static_cast<uint8_t>(mode_output.source);
+	depth_allocator_status.mode_branch_overrode_solution =
+		mode_output.mode_branch_overrode_solution;
+	depth_allocator_status.mode_branch_symmetric_before =
+		executable_components.valid ? executable_components.symmetric : NAN;
+	depth_allocator_status.mode_branch_symmetric_after =
+		selected_components.valid ? selected_components.symmetric : NAN;
+	depth_allocator_status.mode_branch_differential_before =
+		executable_components.valid ? executable_components.differential : NAN;
+	depth_allocator_status.mode_branch_differential_after =
+		selected_components.valid ? selected_components.differential : NAN;
+	depth_allocator_status.selected_thrust_left =
+		mode_output.selected ? mode_output.solution.thrust_left_commanded : NAN;
+	depth_allocator_status.selected_thrust_right =
+		mode_output.selected ? mode_output.solution.thrust_right_commanded : NAN;
+	depth_allocator_status.published_hydro_left =
+		published_solution.delta_left_commanded;
+	depth_allocator_status.published_hydro_right =
+		published_solution.delta_right_commanded;
+	constexpr float symmetric_loss_threshold = math::radians(0.1f);
+	depth_allocator_status.symmetric_depth_lost =
+		executable_components.valid && published_components.valid
+		&& fabsf(executable_components.symmetric) > symmetric_loss_threshold
+		&& fabsf(published_components.symmetric) <= symmetric_loss_threshold;
+	depth_allocator_status.symmetric_loss_reason =
+		haar_depth_allocator_status_s::SYMMETRIC_LOSS_NONE;
+
+	if (depth_allocator_status.symmetric_depth_lost) {
+		if (!foil_gate_enabled) {
+			depth_allocator_status.symmetric_loss_reason =
+				haar_depth_allocator_status_s::SYMMETRIC_LOSS_FOIL_GATE;
+
+		} else if (!mode_output.selected) {
+			depth_allocator_status.symmetric_loss_reason =
+				haar_depth_allocator_status_s::SYMMETRIC_LOSS_ALLOCATOR_SUPPRESSED;
+
+		} else if (mode_output.mode_branch_overrode_solution) {
+			depth_allocator_status.symmetric_loss_reason =
+				haar_depth_allocator_status_s::SYMMETRIC_LOSS_MODE_BRANCH_OVERRIDE;
+		}
+	}
+
+	const bool complete_best_feasible_applied =
+		executable.best_feasible && foil_gate_enabled
+		&& mode_output.selected && complete_solution_selected;
+	depth_allocator_status.full_best_feasible_solution_used = complete_best_feasible_applied;
+	depth_allocator_status.best_feasible_rate_limited =
+		complete_best_feasible_applied && executable.rate_limited;
+	depth_allocator_status.depth_degradation_active = complete_best_feasible_applied;
+
+	if (complete_best_feasible_applied) {
+		_depth_degradation_cumulative_time_us += static_cast<uint64_t>(dt * 1e6f);
+	}
+
+	depth_allocator_status.depth_degradation_cumulative_time_us =
+		_depth_degradation_cumulative_time_us;
+
 	hydro_allocate_message_msg.timestamp = hrt_absolute_time();
 	_hydro_allocate_message_pub.publish(hydro_allocate_message_msg);
+	depth_allocator_status.timestamp = hrt_absolute_time();
+	_haar_depth_allocator_status_pub.publish(depth_allocator_status);
 
 	hydro_tilt_message_msg.timestamp = hrt_absolute_time();
 	_hydro_tilt_message_pub.publish(hydro_tilt_message_msg);
@@ -646,6 +861,17 @@ void HydroAllocator::Run()
 	ScheduleDelayed(100_ms);
 
 	perf_end(_loop_perf);
+}
+
+int HydroAllocator::print_status()
+{
+	PX4_INFO("foil gate: AUX selection=%" PRId32 ", value=%.3f, threshold=%.3f, result=%s",
+		 _param_hy_foil_aux.get(), static_cast<double>(_last_foil_aux_value),
+		 static_cast<double>(_param_hy_foil_thr.get()), _last_foil_gate_enabled ? "enabled" : "disabled");
+	PX4_INFO("allocation mode=%" PRId32 ", logical L/R servo indexes=%" PRId32 "/%" PRId32,
+		 _param_hy_allocate_mode.get(), _params.hy_sv_idx[0], _params.hy_sv_idx[1]);
+	perf_print_counter(_loop_perf);
+	return PX4_OK;
 }
 
 int HydroAllocator::task_spawn(int argc, char *argv[])

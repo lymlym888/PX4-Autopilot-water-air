@@ -50,12 +50,17 @@
 #include <uORB/topics/vehicle_attitude.h>
 #include <uORB/topics/debug_vect.h>
 #include <uORB/topics/hydro_allocate_message.h>
+#include <uORB/topics/haar_depth_allocator_status.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/hydro_tilt_message.h>
+#include <uORB/topics/rc_channels.h>
+#include <uORB/topics/input_rc.h>
 
 #include <drivers/drv_hrt.h>
 
 #include <lib/matrix/matrix/math.hpp>
+#include <lib/hydrofoil_allocation/HydrofoilAllocationModel.hpp>
+#include <lib/hydrofoil_allocation/SpeedContextCache.hpp>
 
 using namespace time_literals;
 using namespace matrix;
@@ -76,6 +81,8 @@ public:
 	/** @see ModuleBase */
 	static int print_usage(const char *reason = nullptr);
 
+	int print_status() override;
+
 	bool init();
 
 private:
@@ -83,19 +90,15 @@ private:
 
 	hrt_abstime _last_run{0};
 	float _foldwing_sp{0};
-
-	struct NfParams {
-		float KL;
-		float v2; // v**2
-		float alpha0;
-		float Fx;
-		float Fz;
-	};
-	NfParams _nf_params;
-
-	Vector2f func(Vector2f x, NfParams p);
-	SquareMatrix<float, 2> J_func(Vector2f x, NfParams p);
-	void optim(float x_array[2], NfParams p);
+	float _last_foil_aux_value{0.f};
+	bool _last_foil_gate_enabled{false};
+	hydrofoil::SpeedContextCache _speed_context_cache{};
+	float _previous_executed_delta_left{0.f};
+	float _previous_executed_delta_right{0.f};
+	float _last_feasible_delta_left{0.f};
+	float _last_feasible_delta_right{0.f};
+	bool _last_feasible_solution_valid{false};
+	uint64_t _depth_degradation_cumulative_time_us{0};
 
 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
 
@@ -106,6 +109,8 @@ private:
 	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
 	uORB::Subscription _debug_vect_sub{ORB_ID(debug_vect)};
 	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
+	uORB::Subscription _rc_channels_sub{ORB_ID(rc_channels)};
+	uORB::Subscription _input_rc_sub{ORB_ID(input_rc)};
 
 	vehicle_torque_setpoint_s		_hydro_torque_setpoint_msg{0};
 	vehicle_thrust_setpoint_s		_hydro_thrust_setpoint_msg{0};
@@ -113,11 +118,14 @@ private:
 	vehicle_status_s			_vehicle_status{};
 
 	manual_control_setpoint_s		_manual_control_setpoint{0};
+	rc_channels_s				_rc_channels{};
+	input_rc_s				_input_rc{};
 	vehicle_attitude_s			_vehicle_attitude{0};
 
 	uORB::Publication<actuator_motors_s>	_hydro_motors_pub{ORB_ID(hydro_motors)};
 	uORB::Publication<actuator_servos_s>	_hydro_servos_pub{ORB_ID(hydro_servos)};
 	uORB::Publication<hydro_allocate_message_s>	_hydro_allocate_message_pub{ORB_ID(hydro_allocate_message)};
+	uORB::Publication<haar_depth_allocator_status_s> _haar_depth_allocator_status_pub{ORB_ID(haar_depth_allocator_status)};
 	uORB::Publication<hydro_tilt_message_s>	_hydro_tilt_message_pub{ORB_ID(hydro_tilt_message)};
 
 	perf_counter_t _loop_perf;
@@ -152,6 +160,8 @@ private:
 	DEFINE_PARAMETERS(
 		(ParamFloat<px4::params::HY_ALT_SPEED>) _param_hy_alt_speed,
 		(ParamInt<px4::params::HY_SPEED_SELECT>) _param_hy_speed_select,
+		(ParamInt<px4::params::HY_SR_MODE>) _param_hy_sr_mode,
+			(ParamFloat<px4::params::HY_SR_DRATE>) _param_hy_sr_drate,
 		(ParamFloat<px4::params::HY_RT_MAX_THRUST>) _param_hy_rt_max_thrust,
 		(ParamFloat<px4::params::HY_WING_KL>) _param_hy_wing_kl,
 		(ParamFloat<px4::params::HY_WING_MAX_A>) _param_hy_wing_max_a,
@@ -168,6 +178,7 @@ private:
 		(ParamInt<px4::params::HY_FOIL_AUX>) _param_hy_foil_aux,
 		(ParamFloat<px4::params::HY_FOIL_THR>) _param_hy_foil_thr,
 		(ParamFloat<px4::params::HY_FOIL_AUXGAIN>) _param_hy_foil_auxgain,
+		(ParamFloat<px4::params::COM_RC_LOSS_T>) _param_com_rc_loss_t,
 
 		(ParamInt<px4::params::HY_ALLOCATE_MODE>) _param_hy_allocate_mode,
 		(ParamFloat<px4::params::HY_SV_L_FM>) _param_hy_sv_l_fm,

@@ -1,4 +1,5 @@
 uint64 timestamp                # time since system start (microseconds)
+uint64 timestamp_sample
 
 float32 roll_sp
 float32 pitch_sp
@@ -13,3 +14,68 @@ float32 pitch_z11
 float32 pitch_z12
 float32 pitch_z21
 float32 pitch_z22
+
+uint8 requested_mode
+uint8 active_mode
+uint32 reset_count
+uint32 fault_flags
+uint32 first_fault_code
+uint32 execution_stage_mask
+uint32 first_fault_stage_mask
+uint32 first_fault_total_candidate_time_us
+uint32 first_fault_reference_filter_time_us
+uint32 first_fault_estimator_time_us
+uint32 first_fault_certificate_time_us
+uint32 first_fault_allocation_query_time_us
+uint32 first_fault_nominal_time_us
+uint32 first_fault_cbf_time_us
+uint32 first_fault_nonlinear_check_time_us
+uint32 first_fault_cycle_time_us
+uint32 runtime_soft_budget_us
+uint32 runtime_hard_budget_us
+uint32 consecutive_runtime_overrun_count
+uint16 allocator_valid_streak
+uint16 allocator_invalid_streak
+uint16 activation_required_streak
+bool activation_pending
+bool temporary_fallback_active
+bool healthy
+bool fallback_active
+float32 dt_raw
+float32 dt_used
+float32 manual_roll
+float32 phi
+float32 p
+float32 u_legacy
+float32 u_nominal
+float32 u_selected
+bool physical_mapping_verified
+bool servo_ownership_verified
+bool safe_roll_hardware_ready
+uint32 cycle_time_us
+
+uint8 requested_code
+uint8 active_code
+uint16 trial_id
+uint32 configuration_crc32
+bool shadow_active
+bool output_enabled
+
+float32 phi_cmd
+float32 phi_ref
+float32 phi_ref_dot
+float32 phi_ref_ddot
+float32 u_candidate
+float32 u_blended
+float32 u_effective_model
+
+float32 delta_left_commanded
+float32 delta_right_commanded
+float32 foil_rate_left_commanded
+float32 foil_rate_right_commanded
+bool candidate_valid
+bool interval_valid
+bool estimator_ready
+bool certificate_ready
+bool certificate_warmup
+bool allocation_interval_degraded

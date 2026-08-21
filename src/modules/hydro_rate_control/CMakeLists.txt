@@ -31,6 +31,13 @@
 #
 ############################################################################
 
+px4_add_library(SafeRollController
+	SafeRollController.cpp
+	SafeRollController.hpp
+)
+target_include_directories(SafeRollController PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(SafeRollController PRIVATE perf mathlib HydrofoilAllocationModel)
+
 px4_add_module(
 	MODULE modules__hydro_rate_control
 	MAIN hydro_rate_control
@@ -42,5 +49,7 @@ px4_add_module(
 	DEPENDS
 		px4_work_queue
 		RateControl
+		SafeRollController
+		HydrofoilAllocationModel
 		SlewRate
-	)
+)

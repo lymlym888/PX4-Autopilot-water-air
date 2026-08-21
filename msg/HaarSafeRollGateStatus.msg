@@ -1,0 +1,37 @@
+uint64 timestamp
+uint64 timestamp_sample
+
+uint8 GATE_REASON_NONE = 0
+uint8 GATE_REASON_AUX_THRESHOLD = 1
+uint8 GATE_REASON_NAV_STATE = 2
+uint8 GATE_REASON_AUX_NONFINITE = 3
+uint8 GATE_REASON_AUX_STALE = 4
+uint8 GATE_REASON_CONFIG_INVALID = 5
+
+uint8 requested_code
+uint8 active_code
+uint16 trial_id
+uint32 configuration_crc32
+
+bool aux_gate_enabled_raw
+bool nav_gate_enabled_raw
+bool foil_gate_enabled
+float32 foil_aux_value
+bool foil_aux_above_threshold
+float32 foil_threshold_parameter
+int32 foil_aux_parameter
+int8 foil_aux_rc_channel
+bool foil_aux_mapping_valid
+
+uint64 manual_control_timestamp
+uint64 manual_control_timestamp_sample
+uint32 manual_control_age_us
+uint8 manual_control_data_source
+bool manual_control_valid
+bool rc_signal_lost
+bool rc_failsafe
+
+uint16 aux_gate_low_streak
+uint16 aux_gate_high_streak
+bool aux_gate_inhibit_active
+uint8 gate_close_reason

@@ -1,0 +1,17 @@
+uint64 timestamp
+uint64 timestamp_sample
+
+uint8 requested_code
+uint8 active_code
+uint16 trial_id
+uint32 configuration_crc32
+
+bool field_mode_active
+bool best_feasible_active
+bool temporary_fallback_active
+bool safety_degraded_active
+uint32 severe_fault_code
+
+uint64 cumulative_best_feasible_time_us
+uint64 cumulative_temporary_fallback_time_us
+uint64 cumulative_requested_mode_active_time_us

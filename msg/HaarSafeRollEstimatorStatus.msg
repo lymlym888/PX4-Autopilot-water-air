@@ -1,0 +1,86 @@
+uint64 timestamp
+uint64 timestamp_sample
+
+uint8 requested_code
+uint8 active_code
+uint16 trial_id
+uint32 configuration_crc32
+uint32 first_fault_code
+uint32 execution_stage_mask
+uint32 first_fault_stage_mask
+uint32 first_fault_total_candidate_time_us
+uint32 first_fault_reference_filter_time_us
+uint32 first_fault_estimator_time_us
+uint32 first_fault_certificate_time_us
+uint32 first_fault_allocation_query_time_us
+uint32 first_fault_nominal_time_us
+uint32 first_fault_cbf_time_us
+uint32 first_fault_nonlinear_check_time_us
+uint32 first_fault_cycle_time_us
+uint32 runtime_soft_budget_us
+uint32 runtime_hard_budget_us
+uint32 consecutive_runtime_overrun_count
+uint16 allocator_recovery_streak
+uint32 allocator_invalid_duration_us
+bool allocator_degraded_active
+bool temporary_fallback_active
+bool safety_degraded_active
+float32 last_feasible_u
+float32 phi_cmd
+float32 phi_ref
+float32 phi_ref_dot
+float32 phi_ref_ddot
+float32 u_candidate
+float32 u_blended
+
+float32 b_hat
+float32 b_lower
+float32 b_upper
+float32 rho_b
+float32 d_hat
+float32 rho_d
+float32 certified_width
+
+float32 filtered_u
+float32 filtered_r
+float32 filtered_innovation
+
+bool b_update_active
+bool certificate_update_active
+bool certificate_conflict
+bool interval_valid
+bool estimator_ready
+bool certificate_ready
+bool certificate_warmup
+bool allocation_interval_degraded
+uint8 accepted_lag_mask
+uint8 conflict_lag_mask
+
+float32 u_amp_lower
+float32 u_amp_upper
+float32 u_rate_lower
+float32 u_rate_upper
+float32 u_alloc_lower
+float32 u_alloc_upper
+float32 u_hard_lower
+float32 u_hard_upper
+float32 u_cbf_lower
+float32 u_cbf_upper
+float32 u_safe_lower
+float32 u_safe_upper
+float32 epsilon_relax
+
+float32 h_upper
+float32 h_lower
+float32 psi_upper
+float32 psi_lower
+float32 psi_min
+
+uint32 estimator_time_us
+uint32 reference_filter_time_us
+uint32 certificate_time_us
+uint32 cbf_time_us
+uint32 allocation_query_time_us
+uint32 nominal_time_us
+uint32 nonlinear_check_time_us
+uint32 total_candidate_time_us
