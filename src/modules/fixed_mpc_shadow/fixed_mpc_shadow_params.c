@@ -165,6 +165,9 @@ PARAM_DEFINE_FLOAT(FMPC_FULL_LIM, 0.05f);
 /**
  * Full roll-MPC active duration timeout.
  *
+ * 0 disables the Mode 6 duration timeout.
+ * Positive values retain the finite full-MPC test-duration timeout.
+ *
  * Runtime-clamped to <= 5.0 s in code.
  *
  * @unit s

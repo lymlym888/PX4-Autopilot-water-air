@@ -811,7 +811,7 @@ private:
 
 			snapshot.full_duration_s = (snapshot.timestamp_us - _full_mode_start_timestamp) / 1.0e6f;
 
-			if (snapshot.full_duration_s > cfg.full_dur_s) {
+			if (cfg.full_dur_s > 0.f && snapshot.full_duration_s > cfg.full_dur_s) {
 				_full_mode_start_timestamp = 0;
 				snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::FULL_DURATION_TIMEOUT);
 				snapshot.active_fallback_reason = snapshot.fallback_reason;
