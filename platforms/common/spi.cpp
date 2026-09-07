@@ -87,7 +87,13 @@ const px4_spi_bus_t *px4_spi_buses{nullptr};
 
 int px4_find_spi_bus(uint32_t devid)
 {
-	for (int i = 0; ((px4_spi_bus_t *) px4_spi_buses) != nullptr && i < SPI_BUS_MAX_BUS_ITEMS; ++i) {
+#if BOARD_NUM_SPI_CFG_HW_VERSIONS > 1
+	if (px4_spi_buses == nullptr) {
+		return -1;
+	}
+#endif
+
+	for (int i = 0; i < SPI_BUS_MAX_BUS_ITEMS; ++i) {
 		const px4_spi_bus_t &bus_data = px4_spi_buses[i];
 
 		if (bus_data.bus == -1) {
