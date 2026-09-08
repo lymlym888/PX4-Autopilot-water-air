@@ -50,6 +50,357 @@
 PARAM_DEFINE_INT32(HY_CADRC_EN, 1);
 
 /**
+ * Hydro roll controller selector
+ *
+ * HY_CADRC_EN remains the CADRC enable/kill switch when value 1 is selected.
+ * IDs 2-5 select LADRC, fixed-bandwidth MCEO-ADRC, AMCEO-ADRC and classical
+ * nonlinear ADRC respectively. Armed selector changes remain blocked.
+ *
+ * @value 0 Legacy hydro roll controller
+ * @value 1 Existing CADRC
+ * @value 2 LADRC
+ * @value 3 Fixed-bandwidth MCEO-ADRC
+ * @value 4 AMCEO-ADRC
+ * @value 5 Classical nonlinear ADRC (Han TD, nonlinear ESO and NLSEF)
+ * @min 0
+ * @max 5
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_INT32(HY_RLL_CTRL_SEL, 1);
+
+/**
+ * New-controller roll reference natural frequency
+ *
+ * Conservative Stage 2B placeholder; not flight tuned. This parameter is used
+ * by IDs 2-4 only. ID 5 uses its private Han tracking differentiator.
+ *
+ * @unit rad/s
+ * @min 0.1
+ * @max 20.0
+ * @decimal 2
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_RREF_W, 2.0f);
+
+/**
+ * New-controller roll reference damping ratio
+ *
+ * Conservative Stage 2B placeholder; not flight tuned. This parameter is used
+ * by IDs 2-4 only. ID 5 uses its private Han tracking differentiator.
+ *
+ * @min 0.0
+ * @max 5.0
+ * @decimal 2
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_RREF_ZETA, 1.0f);
+
+/**
+ * New-controller normalized roll-command magnitude limit
+ *
+ * @unit norm
+ * @min 0.0
+ * @max 1.0
+ * @decimal 2
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_RLL_U_MAX, 1.0f);
+
+/**
+ * New-controller normalized roll-command slew limit
+ *
+ * Conservative Stage 2B placeholder; not flight tuned.
+ *
+ * @min 0.0
+ * @max 20.0
+ * @decimal 2
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_RLL_DU_MAX, 1.0f);
+
+/**
+ * New-controller manual roll command timeout
+ *
+ * Publication gaps shorter than this retain the latched command. This
+ * parameter is not used by the legacy or CADRC reference paths.
+ *
+ * @unit s
+ * @min 0.05
+ * @max 5.0
+ * @decimal 2
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_RLL_MAN_TMO, 0.5f);
+
+/**
+ * Nominal new-controller roll input effectiveness
+ *
+ * Maps normalized roll command to nominal roll acceleration, with units
+ * (rad/s^2)/normalized-command. This and the following new-controller
+ * defaults are engineering/simulation starting values, not final parameters
+ * validated on hardware. It is not the MATLAB simulation true-plant b_t.
+ *
+ * @min 0.001
+ * @decimal 4
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_RLL_B0, 10.1746f);
+
+/**
+ * Nominal roll damping coefficient
+ *
+ * This is a controller-model parameter [1/s], not the MATLAB true-plant a_t.
+ *
+ * @unit 1/s
+ * @decimal 3
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_RLL_APHI, -0.5f);
+
+/**
+ * New-controller roll-angle feedback coefficient
+ *
+ * Units are 1/s^2 so that k_phi1 times roll-angle error is roll acceleration.
+ *
+ * @min 0.001
+ * @decimal 3
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_RLL_K1, 26.0f);
+
+/**
+ * New-controller roll-rate feedback coefficient
+ *
+ * Units are 1/s so that k_phi2 times roll-rate error is roll acceleration.
+ *
+ * @min 0.001
+ * @decimal 3
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_RLL_K2, 9.8f);
+
+/**
+ * LADRC observer bandwidth
+ *
+ * Engineering/simulation starting value; not hardware validated.
+ *
+ * @unit rad/s
+ * @min 0.1
+ * @decimal 2
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_LADRC_WO, 25.0f);
+
+/**
+ * Fixed MCEO-ADRC observer bandwidth
+ *
+ * Engineering/simulation starting value; no adaptive scheduling is applied.
+ *
+ * @unit rad/s
+ * @min 0.1
+ * @decimal 2
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_MCEO_WO, 22.0f);
+
+/**
+ * Maximum new-controller integration interval
+ *
+ * Intervals above this bound are rejected, not clamped. Applies only to
+ * LADRC, MCEO-ADRC, AMCEO-ADRC and classical NADRC. Safety starting value,
+ * not flight tuned.
+ *
+ * @unit s
+ * @min 0.002
+ * @max 0.04
+ * @decimal 4
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_RLL_DT_MAX, 0.010f);
+
+/**
+ * AMCEO minimum observer bandwidth
+ *
+ * Final numerical-study starting value; not hardware validated.
+ *
+ * @unit rad/s
+ * @min 0.1
+ * @decimal 2
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_AM_WMIN, 18.0f);
+
+/**
+ * AMCEO maximum observer bandwidth
+ *
+ * Must be greater than HY_AM_WMIN.
+ *
+ * @unit rad/s
+ * @min 0.1
+ * @decimal 2
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_AM_WMAX, 46.0f);
+
+/**
+ * AMCEO baseline and initial scheduling factor
+ *
+ * @min 0.0
+ * @max 1.0
+ * @decimal 3
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_AM_RHO0, 0.16f);
+
+/**
+ * AMCEO tracking-error scheduling weight
+ *
+ * @min 0.0
+ * @decimal 3
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_AM_CE, 0.70f);
+
+/**
+ * AMCEO applied-command penalty weight
+ *
+ * Applied-command utilization is controller/allocation-interface utilization,
+ * not measured physical hydrofoil deflection.
+ *
+ * @min 0.0
+ * @decimal 3
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_AM_CU, 0.01f);
+
+/**
+ * AMCEO scheduler time constant
+ *
+ * @unit s
+ * @min 0.001
+ * @decimal 3
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_AM_TRHO, 0.055f);
+
+/**
+ * AMCEO roll-angle error normalization scale
+ *
+ * Stored directly in SI units. Default is exactly 3 deg converted to radians.
+ *
+ * @unit rad
+ * @min 0.0001
+ * @decimal 6
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_AM_E1BAR, 0.0523598776f);
+
+/**
+ * AMCEO roll-rate error normalization scale
+ *
+ * Stored directly in SI units. Default is exactly 40 deg/s converted to rad/s.
+ *
+ * @unit rad/s
+ * @min 0.0001
+ * @decimal 6
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_AM_E2BAR, 0.698131701f);
+
+/**
+ * Classical NADRC nonlinear ESO bandwidth
+ *
+ * Initial tuning value only; not hardware validated.
+ *
+ * @unit rad/s
+ * @min 0.1
+ * @decimal 2
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_NA_WO, 20.0f);
+
+/**
+ * Classical NADRC tracking differentiator speed factor
+ *
+ * Han fhan algorithmic tuning factor. No physical unit is asserted here.
+ * Initial tuning value only; not hardware validated.
+ *
+ * @min 0.001
+ * @decimal 2
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_NA_TDR, 20.0f);
+
+/**
+ * Classical NADRC tracking differentiator step multiplier
+ *
+ * The fhan auxiliary interval is h0 = HY_NA_TDN0 * controller dt.
+ *
+ * @min 1.0
+ * @decimal 2
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_NA_TDN0, 2.0f);
+
+/**
+ * Classical NADRC nonlinear ESO first fal exponent
+ *
+ * @min 0.001
+ * @decimal 3
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_NA_OA1, 0.5f);
+
+/**
+ * Classical NADRC nonlinear ESO second fal exponent
+ *
+ * @min 0.001
+ * @decimal 3
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_NA_OA2, 0.25f);
+
+/**
+ * Classical NADRC nonlinear ESO fal threshold
+ *
+ * @unit rad
+ * @min 0.000001
+ * @decimal 5
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_NA_ODEL, 0.01f);
+
+/**
+ * Classical NADRC nonlinear feedback roll-angle fal exponent
+ *
+ * @min 0.001
+ * @decimal 3
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_NA_CA1, 0.8f);
+
+/**
+ * Classical NADRC nonlinear feedback roll-rate fal exponent
+ *
+ * @min 0.001
+ * @decimal 3
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_NA_CA2, 1.2f);
+
+/**
+ * Classical NADRC nonlinear feedback fal threshold
+ *
+ * Shared numerical threshold for the angle and rate fal channels. Because the
+ * two inputs have different physical units, no single physical unit is claimed.
+ *
+ * @min 0.000001
+ * @decimal 5
+ * @group HY Roll Controller
+ */
+PARAM_DEFINE_FLOAT(HY_NA_CDEL, 0.01f);
+
+/**
  * CADRC J0 (inertia-like parameter)
  *
  * @min 0.001
@@ -761,5 +1112,3 @@ PARAM_DEFINE_FLOAT(HY_HSMC_IMIN, -20.0f);
  */
 PARAM_DEFINE_FLOAT(HY_MAN_RATIO, 0.0f);
 //手动模式下纵向力的比率
-
-

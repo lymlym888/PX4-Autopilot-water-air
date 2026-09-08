@@ -75,9 +75,16 @@
 #include <uORB/topics/vehicle_air_data.h>
 #include <uORB/topics/depth_estimated.h>
 #include <uORB/topics/hydro_depth_control_message.h>
+#include <uORB/topics/hydro_roll_controller_status.h>
 
 #include <uORB/topics/hydro_cadrc_control_message.h>
+#include "AMCEO_ADRC.hpp"
+#include "ClassicalNADRC.hpp"
 #include "CADRC.h"
+#include "HydroRollController.hpp"
+#include "LADRC.hpp"
+#include "MCEO_ADRC.hpp"
+#include "RollReferenceGenerator.hpp"
 
 using matrix::Eulerf;
 using matrix::Quatf;
@@ -105,6 +112,33 @@ public:
 	bool init();
 
 private:
+	struct NewControllerParameters {
+		float b0;
+		float a_phi;
+		float k_phi1;
+		float k_phi2;
+		float ladrc_wo;
+		float mceo_wo;
+		float dt_max;
+		float am_omega_min;
+		float am_omega_max;
+		float am_rho0;
+		float am_ce;
+		float am_cu;
+		float am_tau_rho;
+		float am_e1_bar;
+		float am_e2_bar;
+		float na_wo;
+		float na_td_r;
+		float na_td_n0;
+		float na_observer_alpha1;
+		float na_observer_alpha2;
+		float na_observer_delta;
+		float na_controller_alpha1;
+		float na_controller_alpha2;
+		float na_controller_delta;
+	};
+
 	void Run() override;
 
 	uORB::SubscriptionCallbackWorkItem _vehicle_angular_velocity_sub{this, ORB_ID(vehicle_angular_velocity)};
@@ -128,6 +162,7 @@ private:
 	uORB::Publication<hydro_depth_control_message_s>	_hydro_depth_control_message_pub{ORB_ID(hydro_depth_control_message)};
 
 	uORB::Publication<hydro_cadrc_control_message_s>	_hydro_cadrc_control_message_pub{ORB_ID(hydro_cadrc_control_message)};
+	uORB::Publication<hydro_roll_controller_status_s>	_hydro_roll_controller_status_pub{ORB_ID(hydro_roll_controller_status)};
 
 	manual_control_setpoint_s		_manual_control_setpoint{0};
 	vehicle_rates_setpoint_s		_rates_sp{};
@@ -141,6 +176,7 @@ private:
 	hydro_depth_control_message_s		_hydro_depth_control_message{};
 
 	hydro_cadrc_control_message_s		_hydro_cadrc_control_message{};
+	hydro_roll_controller_status_s		_hydro_roll_controller_status{};
 
 	//水翼部分的setpoint
 	vehicle_thrust_setpoint_s		_hydro_thrust_setpoint{};
@@ -162,6 +198,30 @@ private:
 	ADRCController _cadrc_roll{};
 	ADRCController _cadrc_pitch{};
 	uint8_t _prev_nav_state{vehicle_status_s::NAVIGATION_STATE_MAX};
+
+	// New-controller infrastructure. CADRC intentionally does not use these objects.
+	LADRC _ladrc_roll{};
+	MCEOADRC _mceo_adrc_roll{};
+	AMCEOADRC _amceo_adrc_roll{};
+	ClassicalNADRC _nadrc_roll{};
+	ManualRollCommandLatch _manual_roll_latch{};
+	RollReferenceGenerator _roll_reference_generator{};
+	HydroRollLimiter _new_roll_limiter{};
+	HydroRollControllerId _active_controller{HydroRollControllerId::Cadrc};
+	HydroRollControllerId _previous_controller{HydroRollControllerId::Cadrc};
+	HydroRollControllerId _last_requested_controller{HydroRollControllerId::Cadrc};
+	uint32_t _roll_controller_reset_counter{0};
+	uint32_t _roll_controller_fault_counter{0};
+	hrt_abstime _last_roll_controller_status_publish{0};
+	bool _roll_controller_switch_blocked{false};
+	bool _new_controller_input_fault{false};
+	bool _new_controller_timing_fault{false};
+	NewControllerParameters _applied_new_controller_parameters{};
+	NewControllerParameters _pending_new_controller_parameters{};
+	bool _new_controller_parameters_initialized{false};
+	bool _new_controller_parameters_pending{false};
+	bool _new_controller_parameter_fault_reported{false};
+	bool _new_controller_parameter_reset_pending{false};
 
 
 	DEFINE_PARAMETERS(
@@ -244,6 +304,36 @@ private:
 
 		//CADRC
 		(ParamInt<px4::params::HY_CADRC_EN>) _param_hy_cadrc_en,
+		(ParamInt<px4::params::HY_RLL_CTRL_SEL>) _param_hy_rll_ctrl_sel,
+		(ParamFloat<px4::params::HY_RREF_W>) _param_hy_rref_w,
+		(ParamFloat<px4::params::HY_RREF_ZETA>) _param_hy_rref_zeta,
+		(ParamFloat<px4::params::HY_RLL_U_MAX>) _param_hy_rll_u_max,
+		(ParamFloat<px4::params::HY_RLL_DU_MAX>) _param_hy_rll_du_max,
+		(ParamFloat<px4::params::HY_RLL_MAN_TMO>) _param_hy_rll_man_tmo,
+		(ParamFloat<px4::params::HY_RLL_B0>) _param_hy_rll_b0,
+		(ParamFloat<px4::params::HY_RLL_APHI>) _param_hy_rll_aphi,
+		(ParamFloat<px4::params::HY_RLL_K1>) _param_hy_rll_k1,
+		(ParamFloat<px4::params::HY_RLL_K2>) _param_hy_rll_k2,
+		(ParamFloat<px4::params::HY_LADRC_WO>) _param_hy_ladrc_wo,
+		(ParamFloat<px4::params::HY_MCEO_WO>) _param_hy_mceo_wo,
+		(ParamFloat<px4::params::HY_RLL_DT_MAX>) _param_hy_rll_dt_max,
+		(ParamFloat<px4::params::HY_AM_WMIN>) _param_hy_am_wmin,
+		(ParamFloat<px4::params::HY_AM_WMAX>) _param_hy_am_wmax,
+		(ParamFloat<px4::params::HY_AM_RHO0>) _param_hy_am_rho0,
+		(ParamFloat<px4::params::HY_AM_CE>) _param_hy_am_ce,
+		(ParamFloat<px4::params::HY_AM_CU>) _param_hy_am_cu,
+		(ParamFloat<px4::params::HY_AM_TRHO>) _param_hy_am_trho,
+		(ParamFloat<px4::params::HY_AM_E1BAR>) _param_hy_am_e1bar,
+		(ParamFloat<px4::params::HY_AM_E2BAR>) _param_hy_am_e2bar,
+		(ParamFloat<px4::params::HY_NA_WO>) _param_hy_na_wo,
+		(ParamFloat<px4::params::HY_NA_TDR>) _param_hy_na_tdr,
+		(ParamFloat<px4::params::HY_NA_TDN0>) _param_hy_na_tdn0,
+		(ParamFloat<px4::params::HY_NA_OA1>) _param_hy_na_oa1,
+		(ParamFloat<px4::params::HY_NA_OA2>) _param_hy_na_oa2,
+		(ParamFloat<px4::params::HY_NA_ODEL>) _param_hy_na_odel,
+		(ParamFloat<px4::params::HY_NA_CA1>) _param_hy_na_ca1,
+		(ParamFloat<px4::params::HY_NA_CA2>) _param_hy_na_ca2,
+		(ParamFloat<px4::params::HY_NA_CDEL>) _param_hy_na_cdel,
 		(ParamFloat<px4::params::HY_CADRC_J0>) _param_hy_cadrc_j0,
 		(ParamFloat<px4::params::HY_CADRC_KP1>) _param_hy_cadrc_kp1,
 		(ParamFloat<px4::params::HY_CADRC_KP2>) _param_hy_cadrc_kp2,
@@ -272,4 +362,14 @@ private:
 
 	float 		get_airspeed_and_update_scaling();
 	void		vehicle_manual_poll();
+	static bool isNewController(HydroRollControllerId controller);
+	static bool isImplementedNewController(HydroRollControllerId controller);
+	NewControllerParameters readNewControllerParameters() const;
+	static bool newControllerParametersValid(const NewControllerParameters &parameters);
+	static bool newControllerParametersEqual(const NewControllerParameters &lhs,
+			const NewControllerParameters &rhs);
+	bool applyNewControllerParameters(const NewControllerParameters &parameters);
+	void resetNewController(HydroRollControllerId controller, const HydroRollControllerInput &input);
+	HydroRollControllerOutput updateNewController(HydroRollControllerId controller,
+			const HydroRollControllerInput &input);
 };

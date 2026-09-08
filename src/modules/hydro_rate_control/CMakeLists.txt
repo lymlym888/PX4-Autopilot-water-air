@@ -37,6 +37,18 @@ px4_add_module(
 	SRCS
 		HydroRateControl.cpp
 		HydroRateControl.hpp
+		HydroRollController.cpp
+		HydroRollController.hpp
+		RollReferenceGenerator.cpp
+		RollReferenceGenerator.hpp
+		LADRC.cpp
+		LADRC.hpp
+		MCEO_ADRC.cpp
+		MCEO_ADRC.hpp
+		AMCEO_ADRC.cpp
+		AMCEO_ADRC.hpp
+		ClassicalNADRC.cpp
+		ClassicalNADRC.hpp
 		CADRC.cpp
 		CADRC.h
 	DEPENDS

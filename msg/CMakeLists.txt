@@ -260,6 +260,7 @@ set(msg_files
 	WaterLevel.msg
 
 	HydroCadrcControlMessage.msg
+	HydroRollControllerStatus.msg
 )
 list(SORT msg_files)
 

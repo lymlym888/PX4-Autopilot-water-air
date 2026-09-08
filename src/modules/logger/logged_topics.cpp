@@ -61,6 +61,8 @@ void LoggedTopics::add_default_topics()
 	add_topic("hydro_tilt_message");
 
 	add_topic("hydro_cadrc_control_message", 0);
+	// Synchronized roll-controller diagnostics, limited to at most 200 Hz.
+	add_topic("hydro_roll_controller_status", 5);
 
 	// USER TOPIC END
 	add_topic("action_request");
