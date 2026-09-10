@@ -665,6 +665,8 @@ void HydroAllocator::Run()
 
 	fixed_mpc_allocator_status_s fixed_mpc_allocator_status_msg{};
 	fixed_mpc_allocator_status_msg.timestamp = hrt_absolute_time();
+	fixed_mpc_allocator_status_msg.requested_mode = static_cast<uint8_t>(
+		math::constrain(_params.fmpc_mode, int32_t{0}, int32_t{6}));
 	fixed_mpc_allocator_status_msg.fb = true;
 	fixed_mpc_allocator_status_msg.fb_r = static_cast<uint8_t>(fixed_mpc_shadow::FallbackReason::BASE_COMMAND_INVALID);
 
@@ -677,6 +679,8 @@ void HydroAllocator::Run()
 
 	const int left_servo_index = _params.hy_sv_idx[0] - 1;
 	const int right_servo_index = _params.hy_sv_idx[1] - 1;
+	fixed_mpc_allocator_status_msg.left_index = static_cast<int8_t>(left_servo_index);
+	fixed_mpc_allocator_status_msg.right_index = static_cast<int8_t>(right_servo_index);
 
 	if (left_servo_index >= 0 && left_servo_index < actuator_servos_s::NUM_CONTROLS &&
 	    right_servo_index >= 0 && right_servo_index < actuator_servos_s::NUM_CONTROLS &&
@@ -688,6 +692,7 @@ void HydroAllocator::Run()
 		const float mean_servo = 0.5f * (servo_l_base + servo_r_base);
 
 		fixed_mpc_allocator_status_msg.base_ok = PX4_ISFINITE(servo_l_base) && PX4_ISFINITE(servo_r_base) && PX4_ISFINITE(d_base_a);
+		fixed_mpc_allocator_status_msg.fallback_valid = fixed_mpc_allocator_status_msg.base_ok;
 		fixed_mpc_allocator_status_msg.base_src = static_cast<uint8_t>(fixed_mpc_shadow::FmpcBaseSource::ALLOCATOR_STATUS);
 		fixed_mpc_allocator_status_msg.srv_l_b = servo_l_base;
 		fixed_mpc_allocator_status_msg.srv_r_b = servo_r_base;
@@ -697,16 +702,24 @@ void HydroAllocator::Run()
 		fixed_mpc_allocator_status_msg.srv_r_o = servo_r_base;
 
 		_fixed_mpc_tiny_correction_sub.update(&_fixed_mpc_tiny_correction_msg);
+		fixed_mpc_allocator_status_msg.source_timestamp = _fixed_mpc_tiny_correction_msg.timestamp;
+		fixed_mpc_allocator_status_msg.mode_entry_timestamp = _fixed_mpc_tiny_correction_msg.mode_entry_timestamp;
+		fixed_mpc_allocator_status_msg.selector_epoch = _fixed_mpc_tiny_correction_msg.selector_epoch;
+		fixed_mpc_allocator_status_msg.source_sequence = _fixed_mpc_tiny_correction_msg.command_sequence;
+		fixed_mpc_allocator_status_msg.mode_session_id = _fixed_mpc_tiny_correction_msg.mode_session_id;
+		fixed_mpc_allocator_status_msg.source_mode = _fixed_mpc_tiny_correction_msg.mode;
+		fixed_mpc_allocator_status_msg.requested_target_a = _fixed_mpc_tiny_correction_msg.requested_target_a;
 		const float corr_age_ms = (_fixed_mpc_tiny_correction_msg.timestamp > 0) ? (hrt_absolute_time() - _fixed_mpc_tiny_correction_msg.timestamp) / 1000.f : 1.0e9f;
 		const bool corr_topic_fresh = corr_age_ms <= fixed_mpc_shadow::kAllocatorCorrectionTopicMaxAgeMs;
 		const bool mode_active_tiny = _params.fmpc_mode == static_cast<int32_t>(fixed_mpc_shadow::FmpcMode::ACTIVE_TINY);
 		const bool mode_active_bounded = _params.fmpc_mode == static_cast<int32_t>(fixed_mpc_shadow::FmpcMode::ACTIVE_BOUNDED_MPC);
 		const bool mode_full_roll = _params.fmpc_mode == static_cast<int32_t>(fixed_mpc_shadow::FmpcMode::FULL_ROLL_MPC_TEST);
 		const bool any_active_mode = mode_active_tiny || mode_active_bounded || mode_full_roll;
-		const bool active_param_enabled = (_params.fmpc_act_en == 1) && (_params.fmpc_sign_ok == 1);
+		const bool active_param_enabled = mode_full_roll ||
+			((_params.fmpc_act_en == 1) && (_params.fmpc_sign_ok == 1));
 		const bool mode_enabled = mode_active_tiny ||
 			(mode_active_bounded && (_params.fmpc_bnd_en == 1)) ||
-			(mode_full_roll && (_params.fmpc_full_en == 1));
+			mode_full_roll;
 		const bool corr_msg_active = any_active_mode && (_fixed_mpc_tiny_correction_msg.mode == static_cast<uint8_t>(_params.fmpc_mode));
 
 		if (fixed_mpc_allocator_status_msg.base_ok && corr_topic_fresh && any_active_mode && active_param_enabled &&
@@ -767,7 +780,14 @@ void HydroAllocator::Run()
 			}
 
 			if (mode_full_roll) {
-				if (full_trim_en) {
+				if (!PX4_ISFINITE(_fixed_mpc_tiny_correction_msg.cand_a) ||
+				    !PX4_ISFINITE(_fixed_mpc_tiny_correction_msg.cand_b) ||
+				    !PX4_ISFINITE(_fixed_mpc_tiny_correction_msg.base_a) ||
+				    !PX4_ISFINITE(_fixed_mpc_tiny_correction_msg.base_b)) {
+					allow_apply = false;
+					reject_reason = static_cast<uint8_t>(fixed_mpc_shadow::FallbackReason::FULL_SOURCE_INVALID);
+
+				} else if (full_trim_en) {
 					target_diff_a = _fixed_mpc_tiny_correction_msg.cand_a;
 					target_diff_b = _fixed_mpc_tiny_correction_msg.cand_b;
 				} else {
@@ -775,22 +795,33 @@ void HydroAllocator::Run()
 					target_diff_b = math::constrain(_fixed_mpc_tiny_correction_msg.cand_b, -full_lim, full_lim);
 				}
 
-				corr_a = target_diff_a - d_base_a;
-				corr_b = target_diff_b - d_base_b;
+				corr_a = target_diff_a - _fixed_mpc_tiny_correction_msg.base_a;
+				corr_b = target_diff_b - _fixed_mpc_tiny_correction_msg.base_b;
 			}
 
 			const float candidate_limit =
 				(mode_full_roll && full_trim_en) ? full_cand_max : _params.fmpc_cand_max;
 
-			if (allow_apply && (fabsf(target_diff_a) > candidate_limit || fabsf(target_diff_b) > candidate_limit)) {
+			if (allow_apply && mode_full_roll) {
+				target_diff_a = math::constrain(target_diff_a, -candidate_limit, candidate_limit);
+				target_diff_b = -target_diff_a;
+
+			} else if (allow_apply &&
+				   (fabsf(target_diff_a) > candidate_limit || fabsf(target_diff_b) > candidate_limit)) {
 				allow_apply = false;
 				reject_reason = static_cast<uint8_t>(fixed_mpc_shadow::FallbackReason::CANDIDATE_LIMIT);
+			}
+
+			if (allow_apply && mode_full_roll) {
+				const float max_abs_diff = 2.f * math::max(abs_limit - fabsf(mean_servo), 0.f);
+				target_diff_a = math::constrain(target_diff_a, -max_abs_diff, max_abs_diff);
+				target_diff_b = -target_diff_a;
 			}
 
 			const float servo_l_candidate = mean_servo + 0.5f * target_diff_a;
 			const float servo_r_candidate = mean_servo - 0.5f * target_diff_a;
 
-			if (allow_apply && (mode_active_bounded || mode_full_roll) &&
+			if (allow_apply && mode_active_bounded &&
 			    (fabsf(servo_l_candidate) > abs_limit || fabsf(servo_r_candidate) > abs_limit)) {
 				allow_apply = false;
 				reject_reason = static_cast<uint8_t>(fixed_mpc_shadow::FallbackReason::SATURATION_NO_HEADROOM);
@@ -801,10 +832,17 @@ void HydroAllocator::Run()
 				const float servo_r_out = math::constrain(servo_r_candidate, -1.f, 1.f);
 				hydro_servos_msg.control[left_servo_index] = servo_l_out;
 				hydro_servos_msg.control[right_servo_index] = servo_r_out;
-				fixed_mpc_allocator_status_msg.app_ca = (servo_l_out - servo_r_out) - d_base_a;
-				fixed_mpc_allocator_status_msg.app_cb = -fixed_mpc_allocator_status_msg.app_ca;
+				const float applied_base_a = mode_full_roll ? _fixed_mpc_tiny_correction_msg.base_a : d_base_a;
+				const float applied_base_b = mode_full_roll ? _fixed_mpc_tiny_correction_msg.base_b : d_base_b;
+				fixed_mpc_allocator_status_msg.app_ca = (servo_l_out - servo_r_out) - applied_base_a;
+				fixed_mpc_allocator_status_msg.app_cb = (servo_r_out - servo_l_out) - applied_base_b;
 				fixed_mpc_allocator_status_msg.srv_l_o = servo_l_out;
 				fixed_mpc_allocator_status_msg.srv_r_o = servo_r_out;
+				fixed_mpc_allocator_status_msg.source_implemented_target_a = servo_l_out - servo_r_out;
+				fixed_mpc_allocator_status_msg.source_target_clamped = mode_full_roll &&
+					fabsf(fixed_mpc_allocator_status_msg.source_implemented_target_a -
+					       fixed_mpc_allocator_status_msg.requested_target_a) > 1.0e-6f;
+				fixed_mpc_allocator_status_msg.command_valid = mode_full_roll;
 				fixed_mpc_allocator_status_msg.act_ap = true;
 				fixed_mpc_allocator_status_msg.fb = false;
 				fixed_mpc_allocator_status_msg.fb_r = static_cast<uint8_t>(fixed_mpc_shadow::FallbackReason::NONE);

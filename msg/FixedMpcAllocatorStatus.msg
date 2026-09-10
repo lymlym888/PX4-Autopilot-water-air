@@ -1,6 +1,19 @@
 uint64 timestamp
+uint64 source_timestamp
+uint64 mode_entry_timestamp
+uint64 selector_epoch # Same-command producer acknowledgement, not a latest-value join
+
+uint32 source_sequence
+uint32 mode_session_id
+
+uint8 requested_mode
+uint8 source_mode
+int8 left_index
+int8 right_index
 
 bool base_ok
+bool command_valid
+bool fallback_valid
 uint8 base_src
 
 float32 srv_l_b
@@ -13,6 +26,10 @@ float32 app_cb
 
 float32 srv_l_o
 float32 srv_r_o
+
+float32 requested_target_a
+float32 source_implemented_target_a
+bool source_target_clamped
 
 bool act_ap
 bool fb

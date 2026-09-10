@@ -58,6 +58,8 @@
 #include <ControlAllocationPseudoInverse.hpp>
 #include <ControlAllocationSequentialDesaturation.hpp>
 
+#include "RollFinOutputSelector.hpp"
+
 #include <lib/matrix/matrix/math.hpp>
 #include <lib/perf/perf_counter.h>
 #include <px4_platform_common/px4_config.h>
@@ -78,6 +80,8 @@
 #include <uORB/topics/vehicle_thrust_setpoint.h>
 #include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/failure_detector_status.h>
+#include <uORB/topics/fixed_mpc_allocator_status.h>
+#include <uORB/topics/fixed_mpc_final_output_status.h>
 #include <uORB/topics/manual_control_setpoint.h>
 
 class ControlAllocator : public ModuleBase<ControlAllocator>, public ModuleParams, public px4::ScheduledWorkItem
@@ -116,6 +120,8 @@ private:
 	struct ParamHandles {
 		param_t slew_rate_motors[MAX_NUM_MOTORS];
 		param_t slew_rate_servos[MAX_NUM_SERVOS];
+		param_t fmpc_mode;
+		param_t hy_sv_idx[2];
 	};
 
 	struct Params {
@@ -181,6 +187,7 @@ private:
 
 	uORB::Subscription _hydro_motors_sub{ORB_ID(hydro_motors)};
 	uORB::Subscription _hydro_servos_sub{ORB_ID(hydro_servos)};
+	uORB::Subscription _fixed_mpc_allocator_status_sub{ORB_ID(fixed_mpc_allocator_status)};
 
 	uORB::Subscription _manual_control_setpoint_sub{ORB_ID(manual_control_setpoint)};
 
@@ -190,6 +197,8 @@ private:
 	uORB::Publication<actuator_motors_s>	_actuator_motors_pub{ORB_ID(actuator_motors)};
 	uORB::Publication<actuator_servos_s>	_actuator_servos_pub{ORB_ID(actuator_servos)};
 	uORB::Publication<actuator_servos_trim_s>	_actuator_servos_trim_pub{ORB_ID(actuator_servos_trim)};
+	uORB::Publication<fixed_mpc_final_output_status_s> _fixed_mpc_final_output_status_pub{
+		ORB_ID(fixed_mpc_final_output_status)};
 
 	uORB::SubscriptionInterval _parameter_update_sub{ORB_ID(parameter_update), 1_s};
 
@@ -199,6 +208,8 @@ private:
 
 	actuator_motors_s _hydro_motors{0};
 	actuator_servos_s _hydro_servos{0};
+	fixed_mpc_allocator_status_s _fixed_mpc_allocator_status{};
+	roll_fin_output::State _roll_fin_selector_state{};
 
 	manual_control_setpoint_s	_manual_control_setpoint{0};
 

@@ -73,6 +73,14 @@ ControlAllocator::ControlAllocator() :
 		_param_handles.slew_rate_servos[i] = param_find(buffer);
 	}
 
+	_param_handles.fmpc_mode = param_find("FMPC_MODE");
+
+	for (int i = 0; i < 2; ++i) {
+		char buffer[17];
+		snprintf(buffer, sizeof(buffer), "HY_SV%u_IDX", i);
+		_param_handles.hy_sv_idx[i] = param_find(buffer);
+	}
+
 	parameters_updated();
 }
 
@@ -684,6 +692,7 @@ ControlAllocator::publish_actuator_controls()
 
 	_hydro_motors_sub.update(&_hydro_motors);
 	_hydro_servos_sub.update(&_hydro_servos);
+	_fixed_mpc_allocator_status_sub.update(&_fixed_mpc_allocator_status);
 
 	_manual_control_setpoint_sub.copy(&_manual_control_setpoint);
 
@@ -838,26 +847,167 @@ ControlAllocator::publish_actuator_controls()
 
 	// servos
 	if (_num_actuators[1] > 0) {
-		int servos_idx;
+		const int servo_count = math::min(_num_actuators[1], static_cast<int>(actuator_servos_s::NUM_CONTROLS));
+		float ordinary_servo[actuator_servos_s::NUM_CONTROLS] {};
+		float servo_min[actuator_servos_s::NUM_CONTROLS] {};
+		float servo_max[actuator_servos_s::NUM_CONTROLS] {};
 
-		for (servos_idx = 0; servos_idx < _num_actuators[1] && servos_idx < actuator_servos_s::NUM_CONTROLS; servos_idx++) {
-			int selected_matrix = _control_allocation_selection_indexes[actuator_idx];
-			float actuator_sp = _control_allocation[selected_matrix]->getActuatorSetpoint()(actuator_idx_matrix[selected_matrix]);
-			actuator_sp += _hydro_servos.control[servos_idx];// 加上hydro_allocator的输出
-
-			//副翼禁用
-			if(!enable_aileron && (servos_idx == aile_0_idx-1 || servos_idx == aile_1_idx-1)){
-				actuator_sp = 0;
-			}
-
-			actuator_servos.control[servos_idx] = PX4_ISFINITE(actuator_sp) ? math::constrain(actuator_sp, -1.0f, 1.0f) : NAN;
+		for (int servos_idx = 0; servos_idx < servo_count; servos_idx++) {
+			const int selected_matrix = _control_allocation_selection_indexes[actuator_idx];
+			const int selected_index = actuator_idx_matrix[selected_matrix];
+			ordinary_servo[servos_idx] = _control_allocation[selected_matrix]->getActuatorSetpoint()(selected_index);
+			// Keep the original final actuator_servos bounds for legacy modes.
+			servo_min[servos_idx] = -1.f;
+			servo_max[servos_idx] = 1.f;
 			++actuator_idx_matrix[selected_matrix];
 			++actuator_idx;
-
 		}
 
+		for (int servos_idx = 0; servos_idx < servo_count; servos_idx++) {
+			float actuator_sp = ordinary_servo[servos_idx] + _hydro_servos.control[servos_idx];
+
+			// Preserve the existing aileron-enable safety behavior for every non-selected channel.
+			if (!enable_aileron && (servos_idx == aile_0_idx - 1 || servos_idx == aile_1_idx - 1)) {
+				actuator_sp = 0.f;
+			}
+
+			actuator_servos.control[servos_idx] = PX4_ISFINITE(actuator_sp) ?
+				math::constrain(actuator_sp, servo_min[servos_idx], servo_max[servos_idx]) : NAN;
+		}
+
+		int32_t requested_mode_param = 1;
+		int32_t left_index_param = 0;
+		int32_t right_index_param = 0;
+
+		if (_param_handles.fmpc_mode != PARAM_INVALID) {
+			param_get(_param_handles.fmpc_mode, &requested_mode_param);
+		}
+
+		if (_param_handles.hy_sv_idx[0] != PARAM_INVALID) {
+			param_get(_param_handles.hy_sv_idx[0], &left_index_param);
+		}
+
+		if (_param_handles.hy_sv_idx[1] != PARAM_INVALID) {
+			param_get(_param_handles.hy_sv_idx[1], &right_index_param);
+		}
+
+		const uint8_t requested_mode = static_cast<uint8_t>(math::constrain(requested_mode_param, int32_t{0}, int32_t{6}));
+		const int left_index = left_index_param - 1;
+		const int right_index = right_index_param - 1;
+		const bool indices_valid = left_index >= 0 && right_index >= 0 && left_index < servo_count &&
+					   right_index < servo_count && left_index != right_index;
+		const hrt_abstime now = actuator_servos.timestamp;
+		const bool status_timestamp_valid = _fixed_mpc_allocator_status.timestamp > 0 &&
+						  _fixed_mpc_allocator_status.timestamp <= now;
+		const bool allocator_status_fresh = status_timestamp_valid &&
+						(now - _fixed_mpc_allocator_status.timestamp <= roll_fin_output::kSourceMaxAgeUs);
+		const bool status_indices_match = _fixed_mpc_allocator_status.left_index == left_index &&
+						 _fixed_mpc_allocator_status.right_index == right_index;
+		const bool legacy_source_current = allocator_status_fresh && status_indices_match &&
+						 _fixed_mpc_allocator_status.requested_mode == requested_mode;
+
+		roll_fin_output::Input selector_input{};
+		selector_input.now = now;
+		selector_input.requested_mode = requested_mode;
+		selector_input.left_index = left_index;
+		selector_input.right_index = right_index;
+		selector_input.servo_count = servo_count;
+		selector_input.legacy_source_current = legacy_source_current;
+
+		if (indices_valid) {
+			const bool left_channel_enabled = enable_aileron ||
+				(left_index != aile_0_idx - 1 && left_index != aile_1_idx - 1);
+			const bool right_channel_enabled = enable_aileron ||
+				(right_index != aile_0_idx - 1 && right_index != aile_1_idx - 1);
+			selector_input.left_channel_enabled = left_channel_enabled;
+			selector_input.right_channel_enabled = right_channel_enabled;
+			selector_input.ordinary_left = ordinary_servo[left_index];
+			selector_input.ordinary_right = ordinary_servo[right_index];
+			selector_input.left_min = servo_min[left_index];
+			selector_input.left_max = servo_max[left_index];
+			selector_input.right_min = servo_min[right_index];
+			selector_input.right_max = servo_max[right_index];
+
+			if (legacy_source_current) {
+				selector_input.legacy_hydro_left = _fixed_mpc_allocator_status.srv_l_o;
+				selector_input.legacy_hydro_right = _fixed_mpc_allocator_status.srv_r_o;
+
+			} else {
+				selector_input.legacy_hydro_left = _hydro_servos.control[left_index];
+				selector_input.legacy_hydro_right = _hydro_servos.control[right_index];
+			}
+		}
+
+		selector_input.source.status_timestamp = _fixed_mpc_allocator_status.timestamp;
+		selector_input.source.source_timestamp = _fixed_mpc_allocator_status.source_timestamp;
+		selector_input.source.mode_entry_timestamp = _fixed_mpc_allocator_status.mode_entry_timestamp;
+		selector_input.source.selector_epoch = _fixed_mpc_allocator_status.selector_epoch;
+		selector_input.source.sequence = _fixed_mpc_allocator_status.source_sequence;
+		selector_input.source.session_id = _fixed_mpc_allocator_status.mode_session_id;
+		selector_input.source.requested_mode = _fixed_mpc_allocator_status.requested_mode;
+		selector_input.source.source_mode = _fixed_mpc_allocator_status.source_mode;
+		selector_input.source.left_index = _fixed_mpc_allocator_status.left_index;
+		selector_input.source.right_index = _fixed_mpc_allocator_status.right_index;
+		selector_input.source.command_valid = _fixed_mpc_allocator_status.command_valid;
+		selector_input.source.fallback_valid = _fixed_mpc_allocator_status.fallback_valid;
+		selector_input.source.command_left = _fixed_mpc_allocator_status.srv_l_o;
+		selector_input.source.command_right = _fixed_mpc_allocator_status.srv_r_o;
+		selector_input.source.fallback_left = _fixed_mpc_allocator_status.srv_l_b;
+		selector_input.source.fallback_right = _fixed_mpc_allocator_status.srv_r_b;
+		selector_input.source.requested_diff = _fixed_mpc_allocator_status.requested_target_a;
+		selector_input.source.implemented_diff = _fixed_mpc_allocator_status.source_implemented_target_a;
+		selector_input.source.fallback_reason = _fixed_mpc_allocator_status.fb_r;
+
+		const roll_fin_output::Result selection = roll_fin_output::select(selector_input, _roll_fin_selector_state);
+
+		roll_fin_output::apply_selected_pair(selector_input, selection, actuator_servos.control,
+						     actuator_servos_s::NUM_CONTROLS);
+
+		fixed_mpc_final_output_status_s final_status{};
+		final_status.timestamp = now;
+		final_status.source_timestamp = _fixed_mpc_allocator_status.source_timestamp;
+		final_status.source_mode_entry_timestamp = _fixed_mpc_allocator_status.mode_entry_timestamp;
+		final_status.selector_epoch = _roll_fin_selector_state.mode_entry_timestamp;
+		final_status.source_selector_epoch = _fixed_mpc_allocator_status.selector_epoch;
+		final_status.last_event_timestamp = _roll_fin_selector_state.last_event_timestamp;
+		final_status.source_sequence = _fixed_mpc_allocator_status.source_sequence;
+		final_status.source_session_id = _fixed_mpc_allocator_status.mode_session_id;
+		final_status.authority_transition_count = _roll_fin_selector_state.authority_transition_count;
+		final_status.fallback_event_count = _roll_fin_selector_state.fallback_event_count;
+		final_status.requested_mode = requested_mode;
+		final_status.selected_owner = static_cast<uint8_t>(selection.owner);
+		final_status.selector_reason = static_cast<uint8_t>(selection.reason);
+		final_status.upstream_fallback_reason = _fixed_mpc_allocator_status.fb_r;
+		final_status.last_event_reason = _roll_fin_selector_state.last_event_reason;
+		final_status.last_upstream_fallback_reason = _roll_fin_selector_state.last_upstream_fallback_reason;
+		final_status.left_index = static_cast<int8_t>(left_index);
+		final_status.right_index = static_cast<int8_t>(right_index);
+		final_status.source_fresh = selection.source_fresh;
+		final_status.source_session_valid = selection.source_session_valid;
+		final_status.source_command_valid = selection.source_command_valid;
+		final_status.source_fallback_valid = selection.source_fallback_valid;
+		final_status.target_clamped = selection.target_clamped || _fixed_mpc_allocator_status.source_target_clamped;
+		final_status.channels_enabled = indices_valid && selector_input.left_channel_enabled &&
+						selector_input.right_channel_enabled;
+		final_status.ordinary_left = indices_valid ? ordinary_servo[left_index] : NAN;
+		final_status.ordinary_right = indices_valid ? ordinary_servo[right_index] : NAN;
+		final_status.hydro_left = indices_valid ?
+			(requested_mode == roll_fin_output::kModeFull ? selector_input.source.command_left :
+			 selector_input.legacy_hydro_left) : NAN;
+		final_status.hydro_right = indices_valid ?
+			(requested_mode == roll_fin_output::kModeFull ? selector_input.source.command_right :
+			 selector_input.legacy_hydro_right) : NAN;
+		final_status.final_left = indices_valid ? actuator_servos.control[left_index] : NAN;
+		final_status.final_right = indices_valid ? actuator_servos.control[right_index] : NAN;
+		final_status.requested_target_a = _fixed_mpc_allocator_status.requested_target_a;
+		final_status.source_implemented_target_a = _fixed_mpc_allocator_status.source_implemented_target_a;
+		final_status.final_implemented_diff_a = indices_valid ?
+			actuator_servos.control[left_index] - actuator_servos.control[right_index] : NAN;
+		final_status.takeover_jump_a = selection.takeover_jump;
+		_fixed_mpc_final_output_status_pub.publish(final_status);
+
 		// PX4_INFO("_num_actuators[1]: %i , NUM_CONTROLS: %i", _num_actuators[1], actuator_servos_s::NUM_CONTROLS); // 8 8
-		for (int i = servos_idx; i < actuator_servos_s::NUM_CONTROLS; i++) {
+		for (int i = servo_count; i < actuator_servos_s::NUM_CONTROLS; i++) {
 			actuator_servos.control[i] = NAN;
 		}
 

@@ -1,5 +1,6 @@
 #pragma once
 #include <stdint.h>
+#include "FullMpcInput.hpp"
 
 namespace fixed_mpc_shadow {
 
@@ -19,10 +20,19 @@ struct MpcResult {
 	uint32_t solve_time_us;
 };
 
+struct FullMpcResult {
+	MpcResult proposal{};
+	FullMpcCommand command{};
+	float model_trim{0.f};
+	float unconstrained_correction{0.f};
+	bool rate_recovery{false};
+};
+
 class FixedLinearMPC {
 public:
     void init();
     MpcResult solve_lqr_clipping(const MpcState &state);
+    FullMpcResult solve_full_roll(const MpcState &state, const FullMpcInput &input);
     MpcResult solve_projected_gradient_qp(const MpcState &state);
     void one_step(float phi, float p, float delta, float &phi_next, float &p_next) const;
 

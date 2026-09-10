@@ -257,6 +257,8 @@ set(msg_files
 	FixedMpcShadowStatus.msg
 	FixedMpcTinyCorrection.msg
 	FixedMpcAllocatorStatus.msg
+	FixedMpcFinalOutputStatus.msg
+	FixedMpcInputStatus.msg
 	HydroAllocateMessage.msg
 	HydroDepthControlMessage.msg
 	HydroTiltMessage.msg

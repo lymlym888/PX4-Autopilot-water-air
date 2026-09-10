@@ -133,9 +133,11 @@ struct Diagnostics {
     bool full_applied;
     float full_duration_s;
     float full_trim_a;
+    float full_trim_b;
     float full_mpc_corr_a;
     float full_target_a;
     float full_target_b;
+    bool full_candidate_clamped;
     bool servo_saturation_flag;
 
     float allocator_applied_corr_A;

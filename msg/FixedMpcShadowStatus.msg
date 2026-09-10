@@ -34,6 +34,11 @@ uint8 diag_ok
 uint8 sensor_ok
 uint8 base_ok
 uint8 direction_ok
+uint8 attitude_ok
+uint8 angular_velocity_ok
+uint8 base_command_ok
+uint8 torque_setpoint_ok
+uint8 solver_ok
 
 uint8 active_requested
 uint8 active_allowed
@@ -52,6 +57,7 @@ uint8 full_applied
 uint8 full_trim_en
 float32 full_duration_s
 float32 full_trim_a
+float32 full_trim_b
 float32 full_mpc_corr_a
 float32 full_target_a
 float32 full_target_b

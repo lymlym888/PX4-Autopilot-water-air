@@ -10,17 +10,23 @@
 #include <uORB/Subscription.hpp>
 #include <uORB/topics/actuator_servos.h>
 #include <uORB/topics/parameter_update.h>
+#include <uORB/topics/manual_control_setpoint.h>
 #include <uORB/topics/vehicle_torque_setpoint.h>
 #include <uORB/topics/vehicle_angular_velocity.h>
 #include <uORB/topics/vehicle_attitude.h>
 #include <uORB/topics/fixed_mpc_shadow_status.h>
 #include <uORB/topics/fixed_mpc_tiny_correction.h>
 #include <uORB/topics/fixed_mpc_allocator_status.h>
+#include <uORB/topics/fixed_mpc_final_output_status.h>
+#include <uORB/topics/fixed_mpc_input_status.h>
 
 #include "FixedLinearMPC.hpp"
 #include "FixedMPCDiagnostics.hpp"
 #include "FixedMPCParams.hpp"
 #include "FixedMpcInterface.hpp"
+#include "Mode6Session.hpp"
+#include "StaticFullTrim.hpp"
+#include "ManualRollReference.hpp"
 
 using namespace time_literals;
 
@@ -49,6 +55,8 @@ struct RuntimeConfig {
 	float full_dur_s{3.f};
 	uint8_t full_src{2};
 	bool full_trim_en{true};
+	float full_trim_a{0.f};
+	bool full_trim_confirmed{false};
 	float g_basemin{0.10f};
 	float g_lim{0.05f};
 	float g_lowlim{0.02f};
@@ -60,6 +68,8 @@ struct RuntimeConfig {
 	bool bnd_lim_clamped{false};
 	bool full_lim_clamped{false};
 	bool full_dur_clamped{false};
+	float manual_roll_max_deg{NAN};
+	float manual_timeout_s{NAN};
 };
 
 class FixedMpcShadow final : public ModuleBase<FixedMpcShadow>, public px4::ScheduledWorkItem
@@ -88,6 +98,8 @@ public:
 		_fmpc_full_dur_handle = param_find("FMPC_FULL_DUR");
 		_fmpc_full_src_handle = param_find("FMPC_FULL_SRC");
 		_fmpc_full_trim_en_handle = param_find("FMPC_FTRIM_EN");
+		_fmpc_trim_a_handle = param_find("FMPC_TRIM_A");
+		_fmpc_trim_ok_handle = param_find("FMPC_TRIM_OK");
 		_fmpc_g_basemin_handle = param_find("FMPC_G_BASEMIN");
 		_fmpc_g_lim_handle = param_find("FMPC_G_LIM");
 		_fmpc_g_lowlim_handle = param_find("FMPC_G_LOWLIM");
@@ -95,6 +107,8 @@ public:
 		_fmpc_rate_max_handle = param_find("FMPC_RATE_MAX");
 		_fmpc_cand_max_handle = param_find("FMPC_CAND_MAX");
 		_fmpc_full_cand_max_handle = param_find("FMPC_FCAND_MAX");
+		_hy_roll_max_handle = param_find("HY_ROLL_MAX");
+		_com_rc_loss_t_handle = param_find("COM_RC_LOSS_T");
 
 		_last_diag_snapshot = make_base_snapshot(hrt_absolute_time(), 0.f, RuntimeConfig{});
 	}
@@ -223,11 +237,28 @@ private:
 		_loop_count++;
 
 		RuntimeConfig cfg = read_runtime_config();
+		_input_status = {};
+		_input_status.timestamp = now;
+		_input_status.mode = cfg.mode;
+		_input_status.full_src = cfg.full_src;
+		_input_status.full_model_variant = cfg.mode == static_cast<uint8_t>(FmpcMode::FULL_ROLL_MPC_TEST) ?
+						  fixed_mpc_input_status_s::FULL_NOMINAL_TRIM : 0;
+		_full_result = {};
 		MpcState state{};
 		Diagnostics snapshot = make_base_snapshot(now, last_run_elapsed_ms, cfg);
-		update_base_command_snapshot(now, snapshot);
+		update_base_command_snapshot(snapshot);
+		update_full_trim_latch(snapshot, cfg);
+		_input_status.trim_candidate_a = _static_trim.candidate;
+		_input_status.trim_bound_a = _static_trim.bound;
+		_input_status.trim_reserve_a = _static_trim.reserve;
+		_input_status.trim_projected = false;
+		_input_status.trim_status = static_cast<uint8_t>(_static_trim.status);
+		_input_status.trim_valid = cfg.full_trim_en && _static_trim.valid;
+		_final_output_sub.update(&_final_output);
+		_mode6_binding.update(_mode6_entry_timestamp, now, _final_output.requested_mode,
+				     _final_output.timestamp, _final_output.selector_epoch);
 
-		if (!update_inputs(now, state, snapshot)) {
+		if (!update_inputs(state, snapshot)) {
 			finalize_mode_logic(snapshot, cfg);
 			evaluate_consistency(snapshot, cfg);
 			publish_snapshot(snapshot);
@@ -237,17 +268,43 @@ private:
 		}
 
 		const hrt_abstime solve_start = hrt_absolute_time();
-		MpcResult result = _mpc.solve_lqr_clipping(state);
+		const bool mode_full = cfg.mode == static_cast<uint8_t>(FmpcMode::FULL_ROLL_MPC_TEST);
+		MpcResult result{};
+
+		if (mode_full) {
+			FullMpcInput input{};
+			const bool reference_ok = update_roll_reference(cfg, state);
+			if (reference_ok && prepare_full_input(cfg, snapshot, state, input)) {
+				_full_result = _mpc.solve_full_roll(state, input);
+				result = _full_result.proposal;
+				if (!result.solver_success) { _input_status.rejection_mask |= SolverNonfinite; }
+			}
+			_input_status.model_previous = state.previous_delta;
+			_input_status.model_proposal = result.delta_rate_limited;
+			_input_status.model_implemented = _full_result.command.model_input;
+			_input_status.requested_correction = _full_result.command.correction;
+			_input_status.implemented_target = _full_result.command.target;
+			_input_status.model_trim = _full_result.model_trim;
+			_input_status.model_correction = _full_result.command.model_input - _full_result.model_trim;
+			_input_status.unconstrained_correction = _full_result.unconstrained_correction;
+			_input_status.rate_recovery = _full_result.rate_recovery;
+			_input_status.slew_limited = _full_result.command.slew_limited;
+			_input_status.constraint_conflict = _full_result.command.constraint_conflict;
+		} else {
+			result = _mpc.solve_lqr_clipping(state);
+		}
 		snapshot.solve_time_us = hrt_elapsed_time(&solve_start);
 		snapshot.solver_success = result.solver_success;
-		snapshot.delta_logged = _previous_delta;
+		snapshot.delta_logged = state.previous_delta;
 		snapshot.delta_mpc_raw = result.delta_raw;
 		snapshot.delta_mpc_amplitude_limited = result.delta_amplitude_limited;
-		snapshot.delta_mpc_amplitude_saturation_flag = fabsf(result.delta_raw) > (kDeltaMax + kDiagnosticTolerance);
-		snapshot.delta_mpc_amplitude_saturation_ratio = (kDeltaMax > 0.f) ?
-				math::min(fabsf(snapshot.delta_mpc_amplitude_limited) / kDeltaMax, 1.0f) : 0.f;
-		snapshot.delta_mpc_rate_limit_reference = _previous_delta;
-		snapshot.delta_mpc_rate_limit_delta = result.delta_rate_limited - _previous_delta;
+		const float amplitude_offset = mode_full && result.solver_success ? _full_result.model_trim : 0.f;
+		const float amplitude_limit = amplitude_diagnostic_limit(cfg);
+		snapshot.delta_mpc_amplitude_saturation_flag = fabsf(result.delta_raw - amplitude_offset) > (amplitude_limit + kDiagnosticTolerance);
+		snapshot.delta_mpc_amplitude_saturation_ratio = (amplitude_limit > 0.f) ?
+				math::min(fabsf(snapshot.delta_mpc_amplitude_limited - amplitude_offset) / amplitude_limit, 1.0f) : 0.f;
+		snapshot.delta_mpc_rate_limit_reference = state.previous_delta;
+		snapshot.delta_mpc_rate_limit_delta = result.delta_rate_limited - state.previous_delta;
 		snapshot.delta_mpc_rate_limit_max_step = kDDeltaMax;
 		snapshot.delta_mpc_rate_limited = result.delta_rate_limited;
 		snapshot.delta_mpc_rate_saturation_flag =
@@ -257,7 +314,7 @@ private:
 		snapshot.delta_mpc_clipped = snapshot.delta_mpc_amplitude_limited;
 		snapshot.delta_mpc_saturation_flag = snapshot.delta_mpc_amplitude_saturation_flag;
 		snapshot.delta_mpc_saturation_ratio = snapshot.delta_mpc_amplitude_saturation_ratio;
-		snapshot.delta_mpc_pre_gate = snapshot.delta_mpc_rate_limited;
+		snapshot.delta_mpc_pre_gate = mode_full ? _full_result.command.correction : snapshot.delta_mpc_rate_limited;
 		snapshot.delta_mpc_shadow_correction =
 			math::constrain(snapshot.delta_mpc_pre_gate, -snapshot.delta_mpc_shadow_correction_limit,
 					snapshot.delta_mpc_shadow_correction_limit);
@@ -276,7 +333,9 @@ private:
 		publish_shadow_diagnostics(snapshot);
 		publish_tiny_correction(snapshot);
 
-		_previous_delta = snapshot.delta_mpc_pre_gate;
+		if (!mode_full) {
+			_previous_delta = snapshot.delta_mpc_pre_gate;
+		}
 	}
 
 	RuntimeConfig read_runtime_config()
@@ -294,6 +353,8 @@ private:
 		float full_dur = 3.f;
 		int32_t full_src = 2;
 		int32_t full_trim_en = 1;
+		float full_trim_a = 0.f;
+		int32_t full_trim_confirmed = 0;
 		float g_basemin = 0.10f;
 		float g_lim = 0.05f;
 		float g_lowlim = 0.02f;
@@ -314,6 +375,8 @@ private:
 		if (_fmpc_full_dur_handle != PARAM_INVALID) { param_get(_fmpc_full_dur_handle, &full_dur); }
 		if (_fmpc_full_src_handle != PARAM_INVALID) { param_get(_fmpc_full_src_handle, &full_src); }
 		if (_fmpc_full_trim_en_handle != PARAM_INVALID) { param_get(_fmpc_full_trim_en_handle, &full_trim_en); }
+		if (_fmpc_trim_a_handle != PARAM_INVALID) { param_get(_fmpc_trim_a_handle, &full_trim_a); }
+		if (_fmpc_trim_ok_handle != PARAM_INVALID) { param_get(_fmpc_trim_ok_handle, &full_trim_confirmed); }
 		if (_fmpc_g_basemin_handle != PARAM_INVALID) { param_get(_fmpc_g_basemin_handle, &g_basemin); }
 		if (_fmpc_g_lim_handle != PARAM_INVALID) { param_get(_fmpc_g_lim_handle, &g_lim); }
 		if (_fmpc_g_lowlim_handle != PARAM_INVALID) { param_get(_fmpc_g_lowlim_handle, &g_lowlim); }
@@ -321,6 +384,8 @@ private:
 		if (_fmpc_rate_max_handle != PARAM_INVALID) { param_get(_fmpc_rate_max_handle, &rate_max); }
 		if (_fmpc_cand_max_handle != PARAM_INVALID) { param_get(_fmpc_cand_max_handle, &cand_max); }
 		if (_fmpc_full_cand_max_handle != PARAM_INVALID) { param_get(_fmpc_full_cand_max_handle, &full_cand_max); }
+		if (_hy_roll_max_handle != PARAM_INVALID) { param_get(_hy_roll_max_handle, &cfg.manual_roll_max_deg); }
+		if (_com_rc_loss_t_handle != PARAM_INVALID) { param_get(_com_rc_loss_t_handle, &cfg.manual_timeout_s); }
 
 		cfg.mode = static_cast<uint8_t>(math::constrain(mode, int32_t{0}, int32_t{6}));
 		cfg.act_en = (act_en == 1);
@@ -350,6 +415,9 @@ private:
 		}
 		cfg.full_src = static_cast<uint8_t>(math::constrain(full_src, int32_t{0}, int32_t{2}));
 		cfg.full_trim_en = (full_trim_en == 1);
+		// Reject invalid static trim at entry; do not silently change a reviewed value.
+		cfg.full_trim_a = full_trim_a;
+		cfg.full_trim_confirmed = (full_trim_confirmed == 1);
 		cfg.g_basemin = math::max(g_basemin, 0.f);
 		cfg.g_lim = math::constrain(g_lim, 0.f, kShadowCorrectionLimit);
 		cfg.g_lowlim = math::constrain(g_lowlim, 0.f, cfg.g_lim);
@@ -360,27 +428,31 @@ private:
 		return cfg;
 	}
 
-	void update_base_command_snapshot(const hrt_abstime now, Diagnostics &snapshot)
+	void update_base_command_snapshot(Diagnostics &snapshot)
 	{
 		_hydro_servos_sub.update(&_hydro_servos);
 		_hydro_torque_setpoint_sub.update(&_hydro_torque_setpoint);
 		_fixed_mpc_allocator_status_sub.update(&_fixed_mpc_allocator_status);
+		const hrt_abstime now = hrt_absolute_time();
+		_input_status.base_checked_at = now;
+		_input_status.torque_timestamp = _hydro_torque_setpoint.timestamp;
 
 		snapshot.base_command_source = static_cast<uint8_t>(FmpcBaseSource::NONE);
 		snapshot.base_command_age_ms = 1.0e9f;
-		snapshot.hydro_torque_setpoint_age_ms = (_hydro_torque_setpoint.timestamp > 0) ?
-				(now - _hydro_torque_setpoint.timestamp) / 1000.f : 1.0e9f;
+		snapshot.hydro_torque_setpoint_age_ms = input_age_ms(now, _hydro_torque_setpoint.timestamp);
 
-		if (PX4_ISFINITE(_hydro_torque_setpoint.xyz[0]) && _hydro_torque_setpoint.timestamp > 0 &&
-		    snapshot.hydro_torque_setpoint_age_ms <= kBaseCommandAgeLimitMs) {
+		if (PX4_ISFINITE(_hydro_torque_setpoint.xyz[0]) &&
+		    input_fresh(now, _hydro_torque_setpoint.timestamp, static_cast<uint64_t>(kBaseCommandAgeLimitMs * 1000.f))) {
 			snapshot.hydro_torque_setpoint_valid = true;
 			snapshot.hydro_torque_roll_cmd = _hydro_torque_setpoint.xyz[0];
 			snapshot.base_command_source = static_cast<uint8_t>(FmpcBaseSource::HYDRO_TORQUE_SETPOINT_ONLY);
 		}
 
 		if (_fixed_mpc_allocator_status.timestamp > 0) {
-			const float age_ms = (now - _fixed_mpc_allocator_status.timestamp) / 1000.f;
-			if (age_ms <= kAllocatorStatusMaxAgeMs && _fixed_mpc_allocator_status.base_ok) {
+			const float age_ms = input_age_ms(now, _fixed_mpc_allocator_status.timestamp);
+			if (input_fresh(now, _fixed_mpc_allocator_status.timestamp, static_cast<uint64_t>(kAllocatorStatusMaxAgeMs * 1000.f)) &&
+			    _fixed_mpc_allocator_status.base_ok) {
+				_input_status.base_timestamp = _fixed_mpc_allocator_status.timestamp;
 				snapshot.base_command_age_ms = age_ms;
 				snapshot.base_command_source = static_cast<uint8_t>(FmpcBaseSource::ALLOCATOR_STATUS);
 				snapshot.left_servo_base = _fixed_mpc_allocator_status.srv_l_b;
@@ -414,7 +486,8 @@ private:
 			return;
 		}
 
-		snapshot.base_command_age_ms = (now - _hydro_servos.timestamp) / 1000.f;
+		_input_status.base_timestamp = _hydro_servos.timestamp;
+		snapshot.base_command_age_ms = input_age_ms(now, _hydro_servos.timestamp);
 		snapshot.base_command_source = static_cast<uint8_t>(FmpcBaseSource::STALE_OR_INVALID);
 		snapshot.left_servo_base = _hydro_servos.control[left_servo_index];
 		snapshot.right_servo_base = _hydro_servos.control[right_servo_index];
@@ -427,7 +500,7 @@ private:
 		snapshot.delta_base_A = snapshot.left_servo_base - snapshot.right_servo_base;
 		snapshot.delta_base_B = snapshot.right_servo_base - snapshot.left_servo_base;
 
-		if (snapshot.base_command_age_ms > kBaseCommandAgeLimitMs) {
+		if (!input_fresh(now, _hydro_servos.timestamp, static_cast<uint64_t>(kBaseCommandAgeLimitMs * 1000.f))) {
 			snapshot.base_command_valid = false;
 			return;
 		}
@@ -436,33 +509,44 @@ private:
 		snapshot.base_command_valid = true;
 	}
 
-	bool update_inputs(const hrt_abstime now, MpcState &state, Diagnostics &snapshot)
+	bool update_inputs(MpcState &state, Diagnostics &snapshot)
 	{
 		vehicle_attitude_s attitude{};
 		vehicle_angular_velocity_s angular_velocity{};
 
-		if (!_vehicle_attitude_sub.copy(&attitude) || !_vehicle_angular_velocity_sub.copy(&angular_velocity)) {
-			snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::SENSOR_INVALID);
-			return false;
-		}
-
-		snapshot.attitude_age_ms = (attitude.timestamp > 0) ? (now - attitude.timestamp) / 1000.f : 1.0e9f;
-		snapshot.angular_velocity_age_ms = (angular_velocity.timestamp > 0) ? (now - angular_velocity.timestamp) / 1000.f : 1.0e9f;
+		const bool attitude_copied = _vehicle_attitude_sub.copy(&attitude);
+		const bool rate_copied = _vehicle_angular_velocity_sub.copy(&angular_velocity);
+		const hrt_abstime now = hrt_absolute_time();
+		_input_status.checked_at = now;
+		_input_status.attitude_timestamp = attitude.timestamp;
+		_input_status.rate_timestamp = angular_velocity.timestamp;
+		snapshot.attitude_age_ms = input_age_ms(now, attitude.timestamp);
+		snapshot.angular_velocity_age_ms = input_age_ms(now, angular_velocity.timestamp);
+		uint32_t faults = 0;
+		if (!attitude_copied) { faults |= AttitudeMissing; }
+		if (!rate_copied) { faults |= RateMissing; }
+		if (attitude.timestamp == 0) { faults |= AttitudeZeroTime; }
+		if (angular_velocity.timestamp == 0) { faults |= RateZeroTime; }
+		if (attitude.timestamp > now) { faults |= AttitudeFuture; }
+		if (angular_velocity.timestamp > now) { faults |= RateFuture; }
+		if (snapshot.attitude_age_ms > kSensorAgeLimitMs) { faults |= AttitudeStale; }
+		if (snapshot.angular_velocity_age_ms > kSensorAgeLimitMs) { faults |= RateStale; }
 
 		for (float q_component : attitude.q) {
 			if (!PX4_ISFINITE(q_component)) {
-				snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::SENSOR_INVALID);
-				return false;
+				faults |= AttitudeNonfinite;
 			}
 		}
 
 		if (!PX4_ISFINITE(angular_velocity.xyz[0])) {
-			snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::SENSOR_INVALID);
-			return false;
+			faults |= RateNonfinite;
 		}
 
-		if (snapshot.attitude_age_ms > kSensorAgeLimitMs || snapshot.angular_velocity_age_ms > kSensorAgeLimitMs) {
-			snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::STALE_SENSOR_DATA);
+		_input_status.rejection_mask |= faults;
+		snapshot.attitude_valid = !(faults & (AttitudeMissing | AttitudeZeroTime | AttitudeFuture | AttitudeStale | AttitudeNonfinite));
+		snapshot.angular_velocity_valid = !(faults & (RateMissing | RateZeroTime | RateFuture | RateStale | RateNonfinite));
+		if (faults != 0) {
+			snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::SENSOR_INVALID);
 			return false;
 		}
 
@@ -475,6 +559,8 @@ private:
 
 		if (!PX4_ISFINITE(snapshot.phi_rad) || !PX4_ISFINITE(snapshot.pitch_rad) ||
 		    !PX4_ISFINITE(snapshot.yaw_rad) || !PX4_ISFINITE(snapshot.p_rad_s)) {
+			_input_status.rejection_mask |= EulerNonfinite;
+			snapshot.attitude_valid = false;
 			snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::SENSOR_INVALID);
 			return false;
 		}
@@ -488,6 +574,84 @@ private:
 		state.phi_rad = snapshot.phi_rad;
 		state.p_rad_s = snapshot.p_rad_s;
 		state.previous_delta = _previous_delta;
+		return true;
+	}
+
+	bool update_roll_reference(const RuntimeConfig &cfg, MpcState &state)
+	{
+		manual_control_setpoint_s manual{};
+		const bool copied = _manual_control_sub.copy(&manual);
+		const hrt_abstime checked_at = hrt_absolute_time();
+		const ManualRollSample sample{manual.timestamp, manual.timestamp_sample, manual.roll,
+			manual.data_source, copied, manual.valid};
+		const RollReference reference = manual_roll_reference(checked_at, sample,
+			cfg.manual_roll_max_deg, cfg.manual_timeout_s);
+		_input_status.reference_timestamp = manual.timestamp;
+		_input_status.reference_sample = manual.timestamp_sample;
+		_input_status.reference_checked_at = checked_at;
+		_input_status.reference_age_ms = input_age_ms(checked_at, manual.timestamp_sample);
+		_input_status.reference_source = manual.data_source;
+		_input_status.roll_stick = manual.roll;
+		_input_status.roll_ref_deg = reference.roll_rad * kRadToDeg;
+		_input_status.reference_status = static_cast<uint8_t>(reference.status);
+		_input_status.reference_valid = reference.valid();
+		if (!apply_roll_reference(cfg.mode, reference, state)) {
+			_input_status.rejection_mask |= ManualReferenceInvalid;
+			return false;
+		}
+		_input_status.roll_error_deg = state.phi_rad * kRadToDeg;
+		return true;
+	}
+
+	bool prepare_full_input(const RuntimeConfig &cfg, const Diagnostics &snapshot, MpcState &state, FullMpcInput &input)
+	{
+		int left = -1;
+		int right = -1;
+		if (!resolve_hydro_servo_indices(left, right) || model_input_sign(left, right) == 0) {
+			_input_status.rejection_mask |= MappingInvalid;
+			return false;
+		}
+		input.model_sign = model_input_sign(left, right);
+		if (_full_input_entry != _mode6_entry_timestamp) {
+			_full_input_entry = _mode6_entry_timestamp;
+			_full_input_sign = input.model_sign;
+		} else if (_full_input_sign != input.model_sign) {
+			_input_status.rejection_mask |= MappingInvalid;
+			return false;
+		}
+		_input_status.model_sign = input.model_sign;
+		input.trim = cfg.full_trim_en ? _full_trim_latched_A : 0.f;
+		input.correction_limit = cfg.full_src == 2 ? cfg.full_lim : math::min(cfg.full_lim, kShadowCorrectionLimit);
+		input.candidate_limit = cfg.full_trim_en ? cfg.full_cand_max : cfg.cand_max;
+		input.mean_servo = 0.5f * (snapshot.left_servo_base + snapshot.right_servo_base);
+		input.servo_limit = math::max(1.f - cfg.sat_margin, 0.f);
+		if (!snapshot.base_command_valid || !snapshot.hydro_torque_setpoint_valid ||
+		    (cfg.full_trim_en && !_full_trim_latched_valid) || !input.valid()) {
+			_input_status.rejection_mask |= CommandSpaceInvalid;
+			return false;
+		}
+
+		_final_output_sub.update(&_final_output);
+		const hrt_abstime now = hrt_absolute_time();
+		_input_status.feedback_checked_at = now;
+		_input_status.feedback_timestamp = _final_output.timestamp;
+		_input_status.feedback_age_ms = input_age_ms(now, _final_output.timestamp);
+		FullMpcFeedback feedback{};
+		feedback.timestamp = _final_output.timestamp;
+		feedback.entry_timestamp = _final_output.source_mode_entry_timestamp;
+		feedback.session = _final_output.source_session_id;
+		feedback.mode = _final_output.requested_mode;
+		feedback.left_index = _final_output.left_index;
+		feedback.right_index = _final_output.right_index;
+		feedback.left = _final_output.final_left;
+		feedback.right = _final_output.final_right;
+		const auto history = full_previous_input(now, _mode6_entry_timestamp, _mode6_session_id,
+				left, right, input.trim, feedback, state.previous_delta);
+		_input_status.feedback_used = history == FullHistorySource::FinalOutput;
+		if (history == FullHistorySource::Invalid) {
+			_input_status.rejection_mask |= FeedbackInvalid;
+			return false;
+		}
 		return true;
 	}
 
@@ -511,6 +675,44 @@ private:
 				math::min(fabsf(snapshot.delta_candidate_shadow_A_limited) / kDeltaMax, 1.0f) : 0.f;
 		snapshot.delta_candidate_shadow_B_saturation_ratio = (kDeltaMax > 0.f) ?
 				math::min(fabsf(snapshot.delta_candidate_shadow_B_limited) / kDeltaMax, 1.0f) : 0.f;
+	}
+
+	void update_full_trim_latch(const Diagnostics &snapshot, const RuntimeConfig &cfg)
+	{
+		const uint8_t full_mode = static_cast<uint8_t>(FmpcMode::FULL_ROLL_MPC_TEST);
+		const bool valid_base = snapshot.base_command_valid &&
+			PX4_ISFINITE(snapshot.delta_base_A) && PX4_ISFINITE(snapshot.delta_base_B);
+
+		if (cfg.mode == full_mode) {
+			if (_previous_mode != full_mode) {
+				_full_trim_latched_valid = false;
+				_static_trim.begin(cfg.full_trim_a, cfg.full_trim_confirmed);
+				_mode6_entry_timestamp = snapshot.timestamp_us;
+				_mode6_command_sequence = 0;
+				_mode6_session_id++;
+
+				if (_mode6_session_id == 0) {
+					_mode6_session_id = 1;
+				}
+			}
+
+			_static_trim.update(cfg.full_trim_en, valid_base, amplitude_diagnostic_limit(cfg),
+				cfg.full_trim_en ? cfg.full_cand_max : cfg.cand_max,
+				0.5f * (snapshot.left_servo_base + snapshot.right_servo_base), math::max(1.f - cfg.sat_margin, 0.f));
+			_full_trim_latched_A = _static_trim.trim;
+			_full_trim_latched_B = -_static_trim.trim;
+			_full_trim_latched_valid = _static_trim.valid;
+
+		} else {
+			_full_trim_latched_valid = false;
+			_full_trim_latched_A = 0.f;
+			_full_trim_latched_B = 0.f;
+			_static_trim.reset();
+			_mode6_entry_timestamp = 0;
+			_mode6_command_sequence = 0;
+		}
+
+		_previous_mode = cfg.mode;
 	}
 
 	void compute_gated_shadow(Diagnostics &snapshot, const RuntimeConfig &cfg) const
@@ -567,42 +769,31 @@ private:
 		       fabsf(servo_r_candidate) <= (abs_limit + kDiagnosticTolerance);
 	}
 
-	float select_full_target_source(const Diagnostics &snapshot, const RuntimeConfig &cfg, bool &valid) const
-	{
-		valid = true;
-
-		switch (cfg.full_src) {
-		case 0:
-			return snapshot.delta_gate_corr_A;
-		case 1:
-			return snapshot.delta_mpc_shadow_correction_A;
-		case 2:
-			return snapshot.delta_mpc_pre_gate;
-		default:
-			valid = false;
-			return 0.f;
-		}
-	}
-
 	void finalize_mode_logic(Diagnostics &snapshot, const RuntimeConfig &cfg)
 	{
+		const bool mode_tiny = cfg.mode == static_cast<uint8_t>(FmpcMode::ACTIVE_TINY);
+		const bool mode_bounded = cfg.mode == static_cast<uint8_t>(FmpcMode::ACTIVE_BOUNDED_MPC);
+		const bool mode_full = cfg.mode == static_cast<uint8_t>(FmpcMode::FULL_ROLL_MPC_TEST);
+
 		snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::UNKNOWN);
 		snapshot.active_fallback_reason = static_cast<uint8_t>(FallbackReason::UNKNOWN);
 		snapshot.active_applied = false;
 		snapshot.active_fallback = true;
 		snapshot.active_output_allowed = false;
 		snapshot.actuator_sign_confirmed = cfg.sign_ok;
-		snapshot.bounded_requested = false;
+		snapshot.bounded_requested = mode_bounded && cfg.act_en;
 		snapshot.bounded_allowed = false;
 		snapshot.bounded_applied = false;
-		snapshot.full_requested = false;
+		snapshot.full_requested = mode_full;
 		snapshot.full_allowed = false;
 		snapshot.full_applied = false;
 		snapshot.full_duration_s = 0.f;
-		snapshot.full_trim_a = 0.f;
+		snapshot.full_trim_a = (mode_full && cfg.full_trim_en && _full_trim_latched_valid) ? _full_trim_latched_A : 0.f;
+		snapshot.full_trim_b = (mode_full && cfg.full_trim_en && _full_trim_latched_valid) ? _full_trim_latched_B : 0.f;
 		snapshot.full_mpc_corr_a = 0.f;
 		snapshot.full_target_a = 0.f;
 		snapshot.full_target_b = 0.f;
+		snapshot.full_candidate_clamped = false;
 		snapshot.servo_saturation_flag = false;
 
 		if (cfg.mode == static_cast<uint8_t>(FmpcMode::OFF)) {
@@ -639,7 +830,7 @@ private:
 			return;
 		}
 
-		if (!cfg.act_en) {
+		if (!mode_full && !cfg.act_en) {
 			_full_mode_start_timestamp = 0;
 			snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::PARAM_ACTIVE_DISABLED);
 			snapshot.active_fallback_reason = snapshot.fallback_reason;
@@ -647,7 +838,7 @@ private:
 			return;
 		}
 
-		if (!cfg.sign_ok) {
+		if (!mode_full && !cfg.sign_ok) {
 			_full_mode_start_timestamp = 0;
 			snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::SIGN_NOT_CONFIRMED);
 			snapshot.active_fallback_reason = snapshot.fallback_reason;
@@ -671,7 +862,15 @@ private:
 			return;
 		}
 
-		if (fabsf(snapshot.roll_deg) > cfg.roll_max_deg) {
+		if (mode_full && cfg.full_trim_en && !_full_trim_latched_valid) {
+			_full_mode_start_timestamp = 0;
+			snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::BASE_COMMAND_INVALID);
+			snapshot.active_fallback_reason = snapshot.fallback_reason;
+			snapshot.gate_reason = static_cast<uint8_t>(FmpcGateReason::BASE_COMMAND_INVALID);
+			return;
+		}
+
+		if (!mode_full && fabsf(snapshot.roll_deg) > cfg.roll_max_deg) {
 			_full_mode_start_timestamp = 0;
 			snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::ROLL_LIMIT);
 			snapshot.active_fallback_reason = snapshot.fallback_reason;
@@ -679,7 +878,7 @@ private:
 			return;
 		}
 
-		if (fabsf(snapshot.roll_rate_deg_s) > cfg.rate_max_deg_s) {
+		if (!mode_full && fabsf(snapshot.roll_rate_deg_s) > cfg.rate_max_deg_s) {
 			_full_mode_start_timestamp = 0;
 			snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::RATE_LIMIT);
 			snapshot.active_fallback_reason = snapshot.fallback_reason;
@@ -687,7 +886,7 @@ private:
 			return;
 		}
 
-		if (!snapshot.gate_direction_compatible && snapshot.gate_base_large) {
+		if (!mode_full && !snapshot.gate_direction_compatible && snapshot.gate_base_large) {
 			_full_mode_start_timestamp = 0;
 			snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::DIRECTION_CONFLICT);
 			snapshot.active_fallback_reason = snapshot.fallback_reason;
@@ -695,26 +894,11 @@ private:
 			return;
 		}
 
-		const bool mode_tiny = cfg.mode == static_cast<uint8_t>(FmpcMode::ACTIVE_TINY);
-		const bool mode_bounded = cfg.mode == static_cast<uint8_t>(FmpcMode::ACTIVE_BOUNDED_MPC);
-		const bool mode_full = cfg.mode == static_cast<uint8_t>(FmpcMode::FULL_ROLL_MPC_TEST);
-
-		snapshot.bounded_requested = mode_bounded && cfg.act_en;
-		snapshot.full_requested = mode_full && cfg.act_en;
-
 		if (mode_bounded && !cfg.bnd_en) {
 			_full_mode_start_timestamp = 0;
 			snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::BOUNDED_ACTIVE_DISABLED);
 			snapshot.active_fallback_reason = snapshot.fallback_reason;
 			snapshot.gate_reason = static_cast<uint8_t>(FmpcGateReason::BOUNDED_ACTIVE_DISABLED);
-			return;
-		}
-
-		if (mode_full && !cfg.full_en) {
-			_full_mode_start_timestamp = 0;
-			snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::FULL_ACTIVE_DISABLED);
-			snapshot.active_fallback_reason = snapshot.fallback_reason;
-			snapshot.gate_reason = static_cast<uint8_t>(FmpcGateReason::FULL_ACTIVE_DISABLED);
 			return;
 		}
 
@@ -794,10 +978,8 @@ private:
 
 		if (mode_full) {
 			snapshot.full_allowed = true;
-			bool valid_source = false;
-			const float selected_source = select_full_target_source(snapshot, cfg, valid_source);
-
-			if (!valid_source) {
+			const FullMpcCommand &command = _full_result.command;
+			if (!_full_result.proposal.solver_success || !PX4_ISFINITE(command.correction)) {
 				_full_mode_start_timestamp = 0;
 				snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::FULL_SOURCE_INVALID);
 				snapshot.active_fallback_reason = snapshot.fallback_reason;
@@ -811,7 +993,7 @@ private:
 
 			snapshot.full_duration_s = (snapshot.timestamp_us - _full_mode_start_timestamp) / 1.0e6f;
 
-			if (cfg.full_dur_s > 0.f && snapshot.full_duration_s > cfg.full_dur_s) {
+			if (full_duration_timed_out(cfg.full_dur_s, snapshot.full_duration_s)) {
 				_full_mode_start_timestamp = 0;
 				snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::FULL_DURATION_TIMEOUT);
 				snapshot.active_fallback_reason = snapshot.fallback_reason;
@@ -819,52 +1001,37 @@ private:
 				return;
 			}
 
-			snapshot.full_mpc_corr_a = math::constrain(selected_source, -cfg.full_lim, cfg.full_lim);
-			snapshot.full_trim_a = cfg.full_trim_en ? snapshot.delta_base_A : 0.f;
-			snapshot.full_target_a = snapshot.full_trim_a + snapshot.full_mpc_corr_a;
-			snapshot.full_target_b = -snapshot.full_target_a;
-			snapshot.active_candidate_A = snapshot.full_target_a;
-			snapshot.active_candidate_B = snapshot.full_target_b;
-			snapshot.active_candidate_A_limited = snapshot.active_candidate_A;
-			snapshot.active_candidate_B_limited = snapshot.active_candidate_B;
-			snapshot.active_corr_A = snapshot.active_candidate_A - snapshot.delta_base_A;
-			snapshot.active_corr_B = snapshot.active_candidate_B - snapshot.delta_base_B;
+			snapshot.full_mpc_corr_a = command.correction;
+			const float requested_target_a = command.requested_target;
+			const float requested_target_b = -command.requested_target;
 
-			const float full_candidate_limit =
-				(cfg.full_trim_en && cfg.mode == static_cast<uint8_t>(FmpcMode::FULL_ROLL_MPC_TEST)) ?
-				cfg.full_cand_max : cfg.cand_max;
-
-			if (fabsf(snapshot.active_candidate_A) > full_candidate_limit ||
-			    fabsf(snapshot.active_candidate_B) > full_candidate_limit) {
+			if (!PX4_ISFINITE(requested_target_a) || !PX4_ISFINITE(requested_target_b)) {
 				_full_mode_start_timestamp = 0;
-				snapshot.active_corr_A = 0.f;
-				snapshot.active_corr_B = 0.f;
-				snapshot.active_candidate_A = snapshot.delta_base_A;
-				snapshot.active_candidate_B = snapshot.delta_base_B;
-				snapshot.active_candidate_A_limited = snapshot.active_candidate_A;
-				snapshot.active_candidate_B_limited = snapshot.active_candidate_B;
-				snapshot.full_target_a = 0.f;
-				snapshot.full_target_b = 0.f;
-				snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::CANDIDATE_LIMIT);
+				snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::FULL_SOURCE_INVALID);
 				snapshot.active_fallback_reason = snapshot.fallback_reason;
-				snapshot.gate_reason = static_cast<uint8_t>(FmpcGateReason::CANDIDATE_LIMIT);
+				snapshot.gate_reason = static_cast<uint8_t>(FmpcGateReason::FULL_SOURCE_INVALID);
 				return;
 			}
 
-			if (!servo_headroom_ok(snapshot, snapshot.active_candidate_A, cfg.sat_margin)) {
+			// Keep the requested target for diagnostics, then implement the finite target through hard bounds.
+			snapshot.active_candidate_A = requested_target_a;
+			snapshot.active_candidate_B = requested_target_b;
+			snapshot.full_candidate_clamped = command.candidate_clamped;
+			snapshot.servo_saturation_flag = command.headroom_clamped;
+			// Publish the same implemented input whose cost was evaluated by the solver.
+			snapshot.full_target_a = command.target;
+			snapshot.full_target_b = -command.target;
+			snapshot.active_candidate_A_limited = snapshot.full_target_a;
+			snapshot.active_candidate_B_limited = snapshot.full_target_b;
+			snapshot.active_corr_A = snapshot.full_target_a - snapshot.full_trim_a;
+			snapshot.active_corr_B = snapshot.full_target_b - snapshot.full_trim_b;
+
+			if (!PX4_ISFINITE(snapshot.full_target_a) || !PX4_ISFINITE(snapshot.full_target_b) ||
+			    !PX4_ISFINITE(snapshot.active_corr_A) || !PX4_ISFINITE(snapshot.active_corr_B)) {
 				_full_mode_start_timestamp = 0;
-				snapshot.servo_saturation_flag = true;
-				snapshot.active_corr_A = 0.f;
-				snapshot.active_corr_B = 0.f;
-				snapshot.active_candidate_A = snapshot.delta_base_A;
-				snapshot.active_candidate_B = snapshot.delta_base_B;
-				snapshot.active_candidate_A_limited = snapshot.active_candidate_A;
-				snapshot.active_candidate_B_limited = snapshot.active_candidate_B;
-				snapshot.full_target_a = 0.f;
-				snapshot.full_target_b = 0.f;
-				snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::SATURATION_NO_HEADROOM);
+				snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::FULL_SOURCE_INVALID);
 				snapshot.active_fallback_reason = snapshot.fallback_reason;
-				snapshot.gate_reason = static_cast<uint8_t>(FmpcGateReason::SATURATION_NO_HEADROOM);
+				snapshot.gate_reason = static_cast<uint8_t>(FmpcGateReason::FULL_SOURCE_INVALID);
 				return;
 			}
 		} else {
@@ -886,21 +1053,37 @@ private:
 	{
 		fixed_mpc_tiny_correction_s msg{};
 		msg.timestamp = diag.timestamp_us;
+		const bool mode_full = diag.fmpc_mode == static_cast<uint8_t>(FmpcMode::FULL_ROLL_MPC_TEST);
+
+		if (mode_full) {
+			_mode6_command_sequence++;
+
+			if (_mode6_command_sequence == 0) {
+				_mode6_command_sequence = 1;
+			}
+		}
+
+		msg.mode_entry_timestamp = mode_full ? _mode6_entry_timestamp : 0;
+		msg.selector_epoch = mode_full ? _mode6_binding.selector_epoch : 0;
+		msg.command_sequence = mode_full ? _mode6_command_sequence : 0;
+		msg.mode_session_id = mode_full ? _mode6_session_id : 0;
 		msg.mode = diag.fmpc_mode;
 		msg.act_req =
-			((diag.fmpc_mode == static_cast<uint8_t>(FmpcMode::ACTIVE_TINY)) ||
-			 (diag.fmpc_mode == static_cast<uint8_t>(FmpcMode::ACTIVE_BOUNDED_MPC)) ||
-			 (diag.fmpc_mode == static_cast<uint8_t>(FmpcMode::FULL_ROLL_MPC_TEST))) && diag.fmpc_act_en;
+			(diag.fmpc_mode == static_cast<uint8_t>(FmpcMode::FULL_ROLL_MPC_TEST)) ||
+			(((diag.fmpc_mode == static_cast<uint8_t>(FmpcMode::ACTIVE_TINY)) ||
+			  (diag.fmpc_mode == static_cast<uint8_t>(FmpcMode::ACTIVE_BOUNDED_MPC))) && diag.fmpc_act_en);
 		msg.act_allow = diag.active_precheck_pass;
 		msg.act_apply = diag.active_applied;
 		msg.fb = diag.active_fallback;
 		msg.fb_r = diag.active_fallback_reason;
 		msg.corr_a = diag.active_corr_A;
 		msg.corr_b = diag.active_corr_B;
-		msg.cand_a = diag.active_candidate_A;
-		msg.cand_b = diag.active_candidate_B;
-		msg.base_a = diag.delta_base_A;
-		msg.base_b = diag.delta_base_B;
+		msg.cand_a = mode_full ? diag.full_target_a : diag.active_candidate_A;
+		msg.cand_b = mode_full ? diag.full_target_b : diag.active_candidate_B;
+		msg.base_a = mode_full ? diag.full_trim_a : diag.delta_base_A;
+		msg.base_b = mode_full ? diag.full_trim_b : diag.delta_base_B;
+		msg.requested_target_a = diag.active_candidate_A;
+		msg.requested_target_b = diag.active_candidate_B;
 		msg.diag_ok = diag.diag_consistency_ok;
 		msg.sen_ok = diag.attitude_valid && diag.angular_velocity_valid;
 		msg.base_ok = diag.base_command_valid && diag.hydro_torque_setpoint_valid;
@@ -939,6 +1122,11 @@ private:
 		msg.sensor_ok = (diag.attitude_valid && diag.angular_velocity_valid) ? 1 : 0;
 		msg.base_ok = (diag.base_command_valid && diag.hydro_torque_setpoint_valid) ? 1 : 0;
 		msg.direction_ok = diag.gate_direction_compatible ? 1 : 0;
+		msg.attitude_ok = diag.attitude_valid ? 1 : 0;
+		msg.angular_velocity_ok = diag.angular_velocity_valid ? 1 : 0;
+		msg.base_command_ok = diag.base_command_valid ? 1 : 0;
+		msg.torque_setpoint_ok = diag.hydro_torque_setpoint_valid ? 1 : 0;
+		msg.solver_ok = diag.solver_success ? 1 : 0;
 		msg.active_requested =
 			(diag.fmpc_mode == static_cast<uint8_t>(FmpcMode::ACTIVE_TINY) && diag.fmpc_act_en) ? 1 : 0;
 		msg.active_allowed = diag.active_precheck_pass ? 1 : 0;
@@ -947,7 +1135,8 @@ private:
 		msg.fallback_reason = diag.fallback_reason;
 		msg.gate_pass = diag.safety_gate_pass ? 1 : 0;
 		msg.candidate_limit_flag =
-			(diag.fallback_reason == static_cast<uint8_t>(FallbackReason::CANDIDATE_LIMIT)) ? 1 : 0;
+			(diag.full_candidate_clamped ||
+			 diag.fallback_reason == static_cast<uint8_t>(FallbackReason::CANDIDATE_LIMIT)) ? 1 : 0;
 		msg.bounded_requested = diag.bounded_requested ? 1 : 0;
 		msg.bounded_allowed = diag.bounded_allowed ? 1 : 0;
 		msg.bounded_applied = diag.bounded_applied ? 1 : 0;
@@ -957,11 +1146,29 @@ private:
 		msg.full_trim_en = diag.fmpc_full_trim_en ? 1 : 0;
 		msg.full_duration_s = diag.full_duration_s;
 		msg.full_trim_a = diag.full_trim_a;
+		msg.full_trim_b = diag.full_trim_b;
 		msg.full_mpc_corr_a = diag.full_mpc_corr_a;
 		msg.full_target_a = diag.full_target_a;
 		msg.full_target_b = diag.full_target_b;
 		msg.servo_saturation_flag = diag.servo_saturation_flag ? 1 : 0;
 		_fixed_mpc_shadow_status_pub.publish(msg);
+
+		if (!diag.base_command_valid) { _input_status.rejection_mask |= BaseInvalid; }
+		if (!diag.hydro_torque_setpoint_valid) { _input_status.rejection_mask |= TorqueInvalid; }
+		_input_status.attitude_age_ms = diag.attitude_age_ms;
+		_input_status.rate_age_ms = diag.angular_velocity_age_ms;
+		_input_status.base_age_ms = diag.base_command_age_ms;
+		_input_status.torque_age_ms = diag.hydro_torque_setpoint_age_ms;
+		if (_input_status.rejection_mask != 0 && _input_status.rejection_mask != _previous_rejection_mask) {
+			_input_rejection_count++;
+			_last_rejection_mask = _input_status.rejection_mask;
+			_last_reject_timestamp = diag.timestamp_us;
+		}
+		_previous_rejection_mask = _input_status.rejection_mask;
+		_input_status.rejection_count = _input_rejection_count;
+		_input_status.last_rejection_mask = _last_rejection_mask;
+		_input_status.last_reject_timestamp = _last_reject_timestamp;
+		_input_status_pub.publish(_input_status);
 	}
 
 	Diagnostics make_base_snapshot(const hrt_abstime now, const float last_run_elapsed_ms, const RuntimeConfig &cfg) const
@@ -1004,15 +1211,27 @@ private:
 		return s;
 	}
 
+	static float amplitude_diagnostic_limit(const RuntimeConfig &cfg)
+	{
+		// Match prepare_full_input/solve_full_roll; a valid configured envelope
+		// must not be rejected downstream using the legacy shadow amplitude cap.
+		return cfg.mode == static_cast<uint8_t>(FmpcMode::FULL_ROLL_MPC_TEST) ?
+			(cfg.full_src == 2 ? cfg.full_lim : math::min(cfg.full_lim, kShadowCorrectionLimit)) : kDeltaMax;
+	}
+
 	void evaluate_consistency(Diagnostics &snapshot, const RuntimeConfig &cfg) const
 	{
 		const bool active_mode =
 			cfg.mode == static_cast<uint8_t>(FmpcMode::ACTIVE_TINY) ||
 			cfg.mode == static_cast<uint8_t>(FmpcMode::ACTIVE_BOUNDED_MPC) ||
 			cfg.mode == static_cast<uint8_t>(FmpcMode::FULL_ROLL_MPC_TEST);
-		const float expected_amplitude_limited = math::constrain(snapshot.delta_mpc_raw, -kDeltaMax, kDeltaMax);
-		const float expected_amplitude_ratio = (kDeltaMax > 0.f) ? math::min(fabsf(expected_amplitude_limited) / kDeltaMax, 1.0f) : 0.f;
-		const bool expected_amplitude_flag = fabsf(snapshot.delta_mpc_raw) > (kDeltaMax + kDiagnosticTolerance);
+		const float amplitude_offset = cfg.mode == static_cast<uint8_t>(FmpcMode::FULL_ROLL_MPC_TEST) &&
+					       snapshot.solver_success ? _full_result.model_trim : 0.f;
+		const float amplitude_limit = amplitude_diagnostic_limit(cfg);
+		const float expected_amplitude_limited = amplitude_offset + math::constrain(snapshot.delta_mpc_raw - amplitude_offset,
+				-amplitude_limit, amplitude_limit);
+		const float expected_amplitude_ratio = (amplitude_limit > 0.f) ? math::min(fabsf(expected_amplitude_limited - amplitude_offset) / amplitude_limit, 1.0f) : 0.f;
+		const bool expected_amplitude_flag = fabsf(snapshot.delta_mpc_raw - amplitude_offset) > (amplitude_limit + kDiagnosticTolerance);
 		const float expected_shadow_correction = math::constrain(
 			snapshot.delta_mpc_pre_gate, -snapshot.delta_mpc_shadow_correction_limit,
 			snapshot.delta_mpc_shadow_correction_limit);
@@ -1026,6 +1245,8 @@ private:
 			(snapshot.delta_mpc_saturation_flag != snapshot.delta_mpc_amplitude_saturation_flag) ||
 			!nearly_equal(snapshot.delta_mpc_saturation_ratio, snapshot.delta_mpc_amplitude_saturation_ratio);
 		snapshot.diag_error_pre_gate_rate_limit =
+			cfg.mode == static_cast<uint8_t>(FmpcMode::FULL_ROLL_MPC_TEST) ?
+			!nearly_equal(snapshot.delta_mpc_pre_gate, _full_result.command.correction) :
 			!nearly_equal(snapshot.delta_mpc_pre_gate, snapshot.delta_mpc_rate_limited);
 		snapshot.diag_error_shadow_correction =
 			!nearly_equal(snapshot.delta_mpc_shadow_correction, expected_shadow_correction);
@@ -1215,14 +1436,26 @@ private:
 	}
 
 	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
+	uORB::Subscription _manual_control_sub{ORB_ID(manual_control_setpoint)};
 	uORB::Subscription _vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
 	uORB::Subscription _hydro_servos_sub{ORB_ID(hydro_servos)};
 	uORB::Subscription _hydro_torque_setpoint_sub{ORB_ID(hydro_torque_setpoint)};
 	uORB::Subscription _fixed_mpc_allocator_status_sub{ORB_ID(fixed_mpc_allocator_status)};
+	uORB::Subscription _final_output_sub{ORB_ID(fixed_mpc_final_output_status)};
+	uORB::Publication<fixed_mpc_input_status_s> _input_status_pub{ORB_ID(fixed_mpc_input_status)};
 	uORB::Publication<fixed_mpc_shadow_status_s> _fixed_mpc_shadow_status_pub{ORB_ID(fixed_mpc_shadow_status)};
 	uORB::Publication<fixed_mpc_tiny_correction_s> _fixed_mpc_tiny_correction_pub{ORB_ID(fixed_mpc_tiny_correction)};
 
 	FixedLinearMPC _mpc{};
+	FullMpcResult _full_result{};
+	hrt_abstime _full_input_entry{0};
+	int _full_input_sign{0};
+	fixed_mpc_final_output_status_s _final_output{};
+	fixed_mpc_input_status_s _input_status{};
+	uint32_t _previous_rejection_mask{0};
+	uint32_t _input_rejection_count{0};
+	uint32_t _last_rejection_mask{0};
+	hrt_abstime _last_reject_timestamp{0};
 	hrt_abstime _last_run_timestamp{0};
 	uint64_t _loop_count{0};
 	float _previous_delta{0.f};
@@ -1242,6 +1475,8 @@ private:
 	param_t _fmpc_full_dur_handle{PARAM_INVALID};
 	param_t _fmpc_full_src_handle{PARAM_INVALID};
 	param_t _fmpc_full_trim_en_handle{PARAM_INVALID};
+	param_t _fmpc_trim_a_handle{PARAM_INVALID};
+	param_t _fmpc_trim_ok_handle{PARAM_INVALID};
 	param_t _fmpc_g_basemin_handle{PARAM_INVALID};
 	param_t _fmpc_g_lim_handle{PARAM_INVALID};
 	param_t _fmpc_g_lowlim_handle{PARAM_INVALID};
@@ -1249,7 +1484,18 @@ private:
 	param_t _fmpc_rate_max_handle{PARAM_INVALID};
 	param_t _fmpc_cand_max_handle{PARAM_INVALID};
 	param_t _fmpc_full_cand_max_handle{PARAM_INVALID};
+	param_t _hy_roll_max_handle{PARAM_INVALID};
+	param_t _com_rc_loss_t_handle{PARAM_INVALID};
 	hrt_abstime _full_mode_start_timestamp{0};
+	uint8_t _previous_mode{static_cast<uint8_t>(FmpcMode::SHADOW_ONLY)};
+	float _full_trim_latched_A{0.f};
+	float _full_trim_latched_B{0.f};
+	bool _full_trim_latched_valid{false};
+	hrt_abstime _mode6_entry_timestamp{0};
+	uint32_t _mode6_command_sequence{0};
+	uint32_t _mode6_session_id{0};
+	Mode6SessionBinding _mode6_binding{};
+	StaticFullTrim _static_trim{};
 	Diagnostics _last_diag_snapshot{};
 };
 

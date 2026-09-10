@@ -61,6 +61,8 @@ void LoggedTopics::add_default_topics()
 	add_optional_topic("fixed_mpc_shadow_status", 20);
 	add_optional_topic("fixed_mpc_tiny_correction", 20);
 	add_optional_topic("fixed_mpc_allocator_status", 20);
+	add_optional_topic("fixed_mpc_final_output_status", 20);
+	add_optional_topic("fixed_mpc_input_status", 20);
 	add_topic("hydro_depth_control_message");
 	add_topic("hydro_tilt_message");
 
@@ -163,7 +165,7 @@ void LoggedTopics::add_default_topics()
 	add_topic("wind", 1000);
 
 	// multi topics
-	add_optional_topic_multi("actuator_outputs", 100, 3);
+	add_optional_topic_multi("actuator_outputs", 20, 3);
 	add_optional_topic_multi("airspeed_wind", 1000, 4);
 	add_optional_topic_multi("control_allocator_status", 200, 2);
 	add_optional_topic_multi("rate_ctrl_status", 200, 2);
@@ -257,7 +259,7 @@ void LoggedTopics::add_default_topics()
 
 	// additional control allocation logging
 	add_topic("actuator_motors", 100);
-	add_topic("actuator_servos", 100);
+	add_topic("actuator_servos", 20);
 	add_topic_multi("vehicle_thrust_setpoint", 20, 2);
 	add_topic_multi("vehicle_torque_setpoint", 20, 2);
 

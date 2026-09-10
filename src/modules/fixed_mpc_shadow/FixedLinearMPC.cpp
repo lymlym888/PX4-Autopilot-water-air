@@ -1,5 +1,6 @@
 #include "FixedLinearMPC.hpp"
 #include "FixedMPCParams.hpp"
+#include "FullRollNominalModel.hpp"
 #include <math.h>
 
 namespace fixed_mpc_shadow {
@@ -72,6 +73,68 @@ MpcResult FixedLinearMPC::solve_lqr_clipping(const MpcState &state) {
 	result.delta_rate_limited = best_delta_rate_limited;
 	result.delta_clipped = best_delta_amplitude_limited;
 	result.delta = best_delta_rate_limited;
+	return result;
+}
+
+FullMpcResult FixedLinearMPC::solve_full_roll(const MpcState &state, const FullMpcInput &input)
+{
+	FullMpcResult result{};
+	if (!input.valid() || !__builtin_isfinite(state.phi_rad) || !__builtin_isfinite(state.p_rad_s) ||
+	    !__builtin_isfinite(state.previous_delta)) {
+		return result;
+	}
+
+	result.model_trim = input.model_sign * input.trim;
+	const float previous_correction = state.previous_delta - result.model_trim;
+	float phi_free = state.phi_rad;
+	float phi_sensitivity = 0.f;
+	float p_sensitivity = 0.f;
+	float curvature = kRDDelta;
+	float linear = -kRDDelta * previous_correction;
+
+	// Exact scalar quadratic for a constant correction over the existing horizon.
+	// No discrete-candidate deadband or assumed affine/self-restoring motion.
+	for (int step = 0; step < kHorizon; ++step) {
+		phi_free += kTs * state.p_rad_s;
+		phi_sensitivity += kTs * p_sensitivity + kB0;
+		p_sensitivity += kB1;
+		curvature += kQPhi * phi_sensitivity * phi_sensitivity +
+			     kQP * p_sensitivity * p_sensitivity + kRDelta;
+		linear += kQPhi * phi_sensitivity * phi_free + kQP * p_sensitivity * state.p_rad_s;
+	}
+
+	const float free_terminal[3] = {phi_free, state.p_rad_s, 0.f};
+	const float sensitivity[3] = {phi_sensitivity, p_sensitivity, 1.f};
+	for (int i = 0; i < 3; ++i) {
+		for (int j = 0; j < 3; ++j) {
+			curvature += sensitivity[i] * kFullRollTerminal[i][j] * sensitivity[j];
+			linear += sensitivity[i] * kFullRollTerminal[i][j] * free_terminal[j];
+		}
+	}
+
+	if (!__builtin_isfinite(curvature) || curvature <= 0.f || !__builtin_isfinite(linear)) {
+		return result;
+	}
+
+	const float raw_correction = -linear / curvature;
+	if (!__builtin_isfinite(raw_correction)) {
+		return result;
+	}
+
+	// Mode 6 uses its configured correction envelope, not the legacy shadow cap.
+	// The shared command projection still enforces total differential and headroom.
+	const float amplitude = input_clamp(raw_correction, -input.correction_limit, input.correction_limit);
+	result.command = implement_full_constrained_candidate(result.model_trim + amplitude,
+			 state.previous_delta, kDDeltaMax, input);
+	result.unconstrained_correction = input.model_sign * raw_correction;
+	result.proposal.delta_raw = result.model_trim + raw_correction;
+	result.proposal.delta_amplitude_limited = result.model_trim + amplitude;
+	result.proposal.delta_rate_limited = result.command.model_input;
+	result.proposal.delta_clipped = result.proposal.delta_amplitude_limited;
+	result.proposal.delta = result.command.model_input;
+	result.rate_recovery = fabsf(result.command.model_input - state.previous_delta) > kDDeltaMax + 1.e-6f;
+	result.proposal.solver_success = __builtin_isfinite(result.command.model_input) &&
+					__builtin_isfinite(result.proposal.delta_raw);
 	return result;
 }
 

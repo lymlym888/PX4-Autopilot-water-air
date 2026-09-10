@@ -82,11 +82,24 @@ enum class FallbackReason : uint8_t {
 
 static constexpr float kFmpcActLimHardMax = 0.02f;
 static constexpr float kFmpcBndLimHardMax = 0.05f;
-static constexpr float kFmpcFullLimHardMax = 0.35f;
+// Full-mode limits are normalized left-minus-right differences, not single-servo travel.
+// Each servo remains bounded by [-1, 1], with the existing margin/headroom applied later.
+static constexpr float kFmpcFullLimHardMax = 2.0f;
 static constexpr float kFmpcFullCandMaxHardMin = 0.10f;
-static constexpr float kFmpcFullCandMaxHardMax = 0.80f;
+static constexpr float kFmpcFullCandMaxHardMax = 2.0f;
 static constexpr float kFmpcFullDurHardMaxS = 5.0f;
 static constexpr float kAllocatorCorrectionTopicMaxAgeMs = 200.f;
 static constexpr float kAllocatorStatusMaxAgeMs = 200.f;
+
+constexpr bool full_duration_timed_out(float duration_limit_s, float elapsed_s)
+{
+    return duration_limit_s > 0.f && elapsed_s > duration_limit_s;
+}
+
+constexpr float constrain_full_candidate(float requested_diff, float candidate_limit)
+{
+    return requested_diff < -candidate_limit ? -candidate_limit :
+           (requested_diff > candidate_limit ? candidate_limit : requested_diff);
+}
 
 } // namespace fixed_mpc_shadow
