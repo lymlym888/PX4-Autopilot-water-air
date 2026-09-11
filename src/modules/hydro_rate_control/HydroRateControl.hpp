@@ -309,7 +309,6 @@ private:
 		(ParamFloat<px4::params::HY_RREF_ZETA>) _param_hy_rref_zeta,
 		(ParamFloat<px4::params::HY_RLL_U_MAX>) _param_hy_rll_u_max,
 		(ParamFloat<px4::params::HY_RLL_DU_MAX>) _param_hy_rll_du_max,
-		(ParamFloat<px4::params::HY_RLL_MAN_TMO>) _param_hy_rll_man_tmo,
 		(ParamFloat<px4::params::HY_RLL_B0>) _param_hy_rll_b0,
 		(ParamFloat<px4::params::HY_RLL_APHI>) _param_hy_rll_aphi,
 		(ParamFloat<px4::params::HY_RLL_K1>) _param_hy_rll_k1,

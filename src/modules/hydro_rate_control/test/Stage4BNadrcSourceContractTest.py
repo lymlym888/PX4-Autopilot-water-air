@@ -4,6 +4,7 @@ import hashlib
 import pathlib
 import re
 import subprocess
+from Z3LimitContract import baseline_bytes, LIMITED_SOURCES
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[4]
@@ -14,7 +15,8 @@ def text(relative_path: str) -> str:
 
 
 def sha256(relative_path: str) -> str:
-    return hashlib.sha256((ROOT / relative_path).read_bytes()).hexdigest()
+    # Freeze all old bytes except the exact user-authorized z3-limit insertion.
+    return hashlib.sha256(baseline_bytes(relative_path, (ROOT / relative_path).read_bytes())).hexdigest()
 
 
 def require_in_order(source: str, snippets: list[str]) -> None:
@@ -38,6 +40,11 @@ protected_hashes = {
 }
 for path, expected in protected_hashes.items():
     assert sha256(path) == expected, f"protected source drift: {path}"
+
+# Preserve NADRC too, allowing only the same exact authorized insertion.
+assert sha256("src/modules/hydro_rate_control/ClassicalNADRC.cpp") == (
+    "4302bf22846381265e9677e1a2e240bc7250d6a730a611dd49f10b06d9e24770"
+)
 
 
 params = text("src/modules/hydro_rate_control/hydro_rate_control_params.c")
@@ -166,7 +173,7 @@ subprocess.run(
         "diff",
         "--exit-code",
         "--",
-        *protected_hashes.keys(),
+        *(path for path in protected_hashes if path not in LIMITED_SOURCES),
         "src/modules/hydro_allocator",
         "src/modules/control_allocator",
         "boards",

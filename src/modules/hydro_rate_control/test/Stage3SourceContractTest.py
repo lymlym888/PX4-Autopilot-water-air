@@ -4,6 +4,7 @@ import hashlib
 import pathlib
 import re
 import subprocess
+from Z3LimitContract import baseline_bytes, LIMITED_SOURCES
 
 
 ROOT = pathlib.Path(__file__).resolve().parents[4]
@@ -14,7 +15,8 @@ def text(relative_path: str) -> str:
 
 
 def sha256(relative_path: str) -> str:
-    return hashlib.sha256((ROOT / relative_path).read_bytes()).hexdigest()
+    # Freeze all old bytes except the exact user-authorized z3-limit insertion.
+    return hashlib.sha256(baseline_bytes(relative_path, (ROOT / relative_path).read_bytes())).hexdigest()
 
 
 def require_in_order(source: str, snippets: list[str]) -> None:

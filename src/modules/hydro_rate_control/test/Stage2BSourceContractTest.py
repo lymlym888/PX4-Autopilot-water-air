@@ -43,17 +43,29 @@ require_in_order(
     ],
 )
 
-# Legacy manual behavior remains intentionally publication-edge based and clears
-# its stored setpoint on a publication gap. Only the separate new latch may hold.
+# User-authorized bench correction: retain the latest manual command via copy().
+# The new-controller latch still receives a publication edge, not a synthetic
+# new sample on every gyro iteration. This intentionally replaces the old
+# publication-gap clearing contract; CADRC mathematics above remain immutable.
 require_in_order(
     source,
     [
-        "const bool got_manual = _manual_control_setpoint_sub.update(&manual_sp);",
-        "if (got_manual && manual_sp.valid && manual_sp.timestamp != 0)",
-        "_manual_control_setpoint = {};",
-        "_manual_control_setpoint.valid = false;",
+        "const bool got_manual = _manual_control_setpoint_sub.updated();",
+        "_manual_control_setpoint_sub.copy(&_manual_control_setpoint);",
+        "const manual_control_setpoint_s &manual_sp = _manual_control_setpoint;",
+        "const bool manual_sample_valid = got_manual && manual_sp.valid && manual_sp.timestamp != 0",
+        "_manual_roll_latch.update(true, got_manual, manual_sample_valid, manual_sp.roll,",
     ],
 )
+assert "_manual_control_setpoint = {};" not in source
+assert "_manual_control_setpoint_sub.update(&manual_sp)" not in source
+
+# Local message-age expiry is removed; upstream invalid input still applies.
+latch = (ROOT / "src/modules/hydro_rate_control/HydroRollController.cpp").read_text()
+assert "timeout_s" not in latch
+assert "HY_RLL_MAN_TMO" not in params and "_param_hy_rll_man_tmo" not in source
+assert "_age_s = static_cast<float>(now - _sample_timestamp) * 1e-6f;" in latch
+assert "_valid = sample_valid && std::isfinite(manual_roll)" in latch
 
 assert "if (selector_edge && armed && requested_controller != _active_controller)" in source
 assert "_roll_controller_switch_blocked = true;" in source

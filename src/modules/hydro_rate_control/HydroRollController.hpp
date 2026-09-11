@@ -104,13 +104,14 @@ public:
 	/**
 	 * Update the new-controller-only manual roll latch.
 	 *
-	 * Publication gaps retain the last command. An explicit invalid sample,
-	 * a non-finite value, a zero/future timestamp, or timeout invalidates the
-	 * latch and changes the held command to current_roll.
+	 * Publication gaps retain the last command without a local age timeout.
+	 * Age is diagnostic only; upstream PX4 manual-input validity still applies.
+	 * An explicit invalid sample, a non-finite value, or a zero/future timestamp
+	 * invalidates the latch and changes the held command to current_roll.
 	 */
 	void update(bool applicable, bool new_sample, bool sample_valid, float manual_roll,
 		uint8_t data_source, uint64_t sample_timestamp, uint64_t now,
-		float roll_scale, float timeout_s, float current_roll);
+		float roll_scale, float current_roll);
 
 	float commandRoll() const { return _command_roll; }
 	float manualRollRaw() const { return _manual_roll_raw; }

@@ -109,23 +109,34 @@ int main()
 	input.command_roll = 0.f;
 	controller.reset(input);
 
+	// Original vector above is retained as pre-limit evidence. The authorized
+	// +/-50 state bound first activates at sample 5. These three rows are from
+	// an independent double-precision simultaneous-Euler/fal calculation with
+	// clipping AFTER propagation. TD acceleration remains +20 in this fixture.
+	static constexpr Golden bounded_tail[] {
+		{0.0048f, 0.48f, 20.f, 0.09677399043f, 3.623466394f, 50.f, -0.09197399043f, -3.143466394f, -42.5901123f, -9.100123081f},
+		{0.00672f, 0.56f, 20.f, 0.1139620983f, 4.334889034f, 50.f, -0.1072420983f, -3.774889034f, -52.6093145f, -10.08484997f},
+		{0.00896f, 0.64f, 20.f, 0.1334707508f, 4.972574663f, 50.f, -0.1245107508f, -4.332574663f, -61.83804741f, -10.9918864f},
+	};
+
 	for (unsigned i = 0; i < sizeof(golden) / sizeof(golden[0]); ++i) {
+		const Golden &expected = i < 5 ? golden[i] : bounded_tail[i - 5];
 		input = inputTemplate();
 		input.phi = 0.05f + 0.01f * static_cast<float>(i) + ((i % 2) ? 0.003f : -0.002f);
 		input.command_roll = 0.12f;
 		input.u_applied_prev = -0.08f + 0.025f * static_cast<float>(i);
 		const HydroRollControllerOutput output = controller.update(input);
 		assert(output.valid);
-		assert(nearlyEqual(controller.v1(), golden[i].v1));
-		assert(nearlyEqual(controller.v2(), golden[i].v2));
-		assert(nearlyEqual(controller.tdAcceleration(), golden[i].td_acceleration));
-		assert(nearlyEqual(controller.z1(), golden[i].z1));
-		assert(nearlyEqual(controller.z2(), golden[i].z2));
-		assert(nearlyEqual(controller.z3(), golden[i].z3));
-		assert(nearlyEqual(controller.e1(), golden[i].e1));
-		assert(nearlyEqual(controller.e2(), golden[i].e2));
-		assert(nearlyEqual(controller.u0(), golden[i].u0));
-		assert(nearlyEqual(output.u_requested, golden[i].u_requested));
+		assert(nearlyEqual(controller.v1(), expected.v1));
+		assert(nearlyEqual(controller.v2(), expected.v2));
+		assert(nearlyEqual(controller.tdAcceleration(), expected.td_acceleration));
+		assert(nearlyEqual(controller.z1(), expected.z1));
+		assert(nearlyEqual(controller.z2(), expected.z2));
+		assert(nearlyEqual(controller.z3(), expected.z3));
+		assert(nearlyEqual(controller.e1(), expected.e1));
+		assert(nearlyEqual(controller.e2(), expected.e2));
+		assert(nearlyEqual(controller.u0(), expected.u0));
+		assert(nearlyEqual(output.u_requested, expected.u_requested));
 		assert(nearlyEqual(output.u_requested, (controller.u0() - controller.z3()) / config.b0));
 	}
 

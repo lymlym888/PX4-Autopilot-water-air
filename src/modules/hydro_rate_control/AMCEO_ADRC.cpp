@@ -129,6 +129,20 @@ HydroRollControllerOutput AMCEOADRC::update(const HydroRollControllerInput &inpu
 	_z3 += input.dt_used * z3_dot;
 	_z4 += input.dt_used * z4_dot;
 
+	// User-requested bench bound on disturbance state [rad/s^2], not output.
+	// Reject overflow before clipping so nonfinite state cannot appear valid.
+	if (!std::isfinite(_z3)) {
+		_valid = false;
+		return {NAN, false, reset_event};
+	}
+
+	if (_z3 > 50.f) {
+		_z3 = 50.f;
+
+	} else if (_z3 < -50.f) {
+		_z3 = -50.f;
+	}
+
 	_e1 = _z1 - input.phi_ref;
 	_e2 = _z2 - input.phi_ref_dot;
 	const float v_phi = input.phi_ref_ddot - _config.common.k_phi1 * _e1 - _config.common.k_phi2 * _e2;

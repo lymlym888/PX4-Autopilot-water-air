@@ -119,20 +119,6 @@ PARAM_DEFINE_FLOAT(HY_RLL_U_MAX, 1.0f);
 PARAM_DEFINE_FLOAT(HY_RLL_DU_MAX, 1.0f);
 
 /**
- * New-controller manual roll command timeout
- *
- * Publication gaps shorter than this retain the latched command. This
- * parameter is not used by the legacy or CADRC reference paths.
- *
- * @unit s
- * @min 0.05
- * @max 5.0
- * @decimal 2
- * @group HY Roll Controller
- */
-PARAM_DEFINE_FLOAT(HY_RLL_MAN_TMO, 0.5f);
-
-/**
  * Nominal new-controller roll input effectiveness
  *
  * Maps normalized roll command to nominal roll acceleration, with units

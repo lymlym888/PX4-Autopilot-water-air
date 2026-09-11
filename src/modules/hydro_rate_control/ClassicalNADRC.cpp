@@ -179,6 +179,20 @@ HydroRollControllerOutput ClassicalNADRC::update(const HydroRollControllerInput 
 	_z2 += input.dt_used * z2_dot;
 	_z3 += input.dt_used * z3_dot;
 
+	// User-requested bench bound on disturbance state [rad/s^2], not output.
+	// Reject overflow before clipping so nonfinite state cannot appear valid.
+	if (!std::isfinite(_z3)) {
+		_valid = false;
+		return {NAN, false, reset_event};
+	}
+
+	if (_z3 > 50.f) {
+		_z3 = 50.f;
+
+	} else if (_z3 < -50.f) {
+		_z3 = -50.f;
+	}
+
 	_e1 = _v1 - _z1;
 	_e2 = _v2 - _z2;
 	const float fal_c1 = fal(_e1, _config.controller_alpha1, _config.controller_delta);

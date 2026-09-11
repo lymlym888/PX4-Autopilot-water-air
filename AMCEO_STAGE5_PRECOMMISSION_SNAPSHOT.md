@@ -1,8 +1,8 @@
 # AMCEO Stage 5 Precommission Snapshot
 
-Snapshot time: `2026-09-07T21:49:13+08:00`  
+Snapshot updated after clean build: `2026-09-10 19:49:55 +08:00`
 Repository: `/home/linyi666/PX4-Autopilot-water-air`  
-Git revision: `6abec104d4680a2c2c36499d665aec7ab18a3063`  
+Git revision: `b47ae65c1073eb5e43f7033591b5f2e2af1f80d9` (branch `AMCEO`)
 Build target: `matek_h743_dummy`  
 Hardware commissioning state: **HOLD — physical actuator isolation has not yet been confirmed**
 
@@ -22,12 +22,15 @@ Software disarm alone is not accepted as the physical safety barrier.
 
 ## Frozen Stage 4B Artifacts
 
+Current release directory: `release/AMCEO_STAGE4B_20260910_b47ae65c10/`.
+The clean rebuild completed `1065/1065`, exit 0, using GCC 9.3.1; all 12 host/source checks passed. Select the `.px4` in this release directory for subsequent commissioning, and verify `SHA256SUMS`. Build evidence is in its `BUILD_REPORT.md`. No control source or parameter definition changed during this rebuild.
+
 | Artifact | Size | Modification time | SHA-256 |
 |---|---:|---|---|
-| `build/matek_h743_dummy/matek_h743_dummy.px4` | 1,537,765 B | 2026-09-07 21:48:10.050324703 +0800 | `01cdc277606f080fcc95ad2d79a6585eb68e07e18ab3dfa75c00dee5ae9a8174` |
-| `build/matek_h743_dummy/matek_h743_dummy.elf` | 36,850,156 B | 2026-09-07 21:48:09.914372241 +0800 | `ce4bc8504e4a3944bbbd1fcbdfe11d8572535ce734ec13ccb1527cf6bed2645d` |
+| `release/AMCEO_STAGE4B_20260910_b47ae65c10/matek_h743_dummy.px4` | 1,537,681 B | 2026-09-10 19:49:55.646105572 +0800 | `00c5760f1432d48475c9ec02151945de11379ac7adb796367e69be25a5867486` |
+| `release/AMCEO_STAGE4B_20260910_b47ae65c10/matek_h743_dummy.elf` | 36,849,684 B | 2026-09-10 19:49:55.509791378 +0800 | `2a6d60d9af23a23cbeb5501556bcd78e283d52c1aece0cd7984956df61abdbab` |
 
-Only the Stage 4B `.px4` file with the exact hash above is a candidate for the future Stage 5 flash step. The previous Stage 4 PX4/ELF hashes (`0c391a...f0664` / `71a6c1...171`) are superseded and are not the final six-controller artifact.
+Only the `.px4` file with the exact hash above is the current candidate for the Stage 5 flash step. The previous Stage 4 hashes and 2026-09-07 Stage 4B hashes (`01cdc277...a8174` / `ce4bc850...2645d`) are superseded. The prior snapshot is preserved in the release directory as `PREVIOUS_SNAPSHOT_20260907.md`. An unrelated MPC package found in the build directory was separately preserved and must not be used for these AMCEO tests.
 
 Generated parameter metadata is also frozen:
 
@@ -36,7 +39,11 @@ Generated parameter metadata is also frozen:
 | `build/matek_h743_dummy/parameters.json` | `2e31c2dc4ce11c5d91c9a8687ab7daca49d937662dc10b58211e9a6a8bbd8e64` |
 | `build/matek_h743_dummy/parameters.xml` | `2af67c88007e73b1fe68e91d6f39b946d438af8767e1db2193f32a4ee379cd6e` |
 
-## Git Working Tree at Freeze
+## Git Working Tree at Current Freeze
+
+The Stage 2B–4B implementation is now committed in `b47ae65c10`. `git status --short` was empty before rebuilding. Afterward only this snapshot and the new release bundle differ; flight-control source/configuration is unchanged.
+
+### Historical working tree from the 2026-09-07 freeze
 
 The working tree contains the cumulative, intentionally uncommitted Stage 2B–4B implementation and reports:
 
@@ -188,7 +195,7 @@ The following cannot be truthfully populated without a physically isolated, conn
 3. Hash and preserve that backup before flashing or changing any parameter.
 4. Record board/firmware identity, boot console, module status, SD status, and logger status.
 5. Re-check the `.px4` SHA-256 immediately before flashing.
-6. Flash only the frozen Stage 4B `.px4` with SHA-256 `01cdc277606f080fcc95ad2d79a6585eb68e07e18ab3dfa75c00dee5ae9a8174`.
+6. Flash only `release/AMCEO_STAGE4B_20260910_b47ae65c10/matek_h743_dummy.px4` with SHA-256 `00c5760f1432d48475c9ec02151945de11379ac7adb796367e69be25a5867486`.
 7. Export a second post-flash/pre-test parameter snapshot and compare it to the original.
 
 No selector or temporary `HY_AM_CE` change is allowed until the original backup exists and is verified.

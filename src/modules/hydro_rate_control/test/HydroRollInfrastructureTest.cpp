@@ -28,21 +28,22 @@ int main()
 	// A valid sample updates the latch in radians. Publication gaps retain it.
 	ManualRollCommandLatch latch;
 	latch.reset(0.05f);
-	latch.update(true, true, true, 0.2f, 1, 900000, 1000000, 0.5f, 0.5f, 0.05f);
+	latch.update(true, true, true, 0.2f, 1, 900000, 1000000, 0.5f, 0.05f);
 	assert(latch.valid());
 	assert(nearlyEqual(latch.commandRoll(), 0.1f));
 	assert(nearlyEqual(latch.ageSeconds(), 0.1f));
-	latch.update(true, false, false, 0.f, 0, 0, 1200000, 0.5f, 0.5f, 0.06f);
+	latch.update(true, false, false, 0.f, 0, 0, 1200000, 0.5f, 0.06f);
 	assert(latch.valid());
 	assert(nearlyEqual(latch.commandRoll(), 0.1f));
 
-	// Timeout invalidates the latch and safely holds the current measured roll.
-	latch.update(true, false, false, 0.f, 0, 0, 1500001, 0.5f, 0.5f, 0.07f);
-	assert(!latch.valid());
-	assert(nearlyEqual(latch.commandRoll(), 0.07f));
+	// User-requested removal of local age expiry: hold across the old timeout.
+	latch.update(true, false, false, 0.f, 0, 0, 1500001, 0.5f, 0.07f);
+	assert(latch.valid());
+	assert(nearlyEqual(latch.commandRoll(), 0.1f));
+	assert(latch.ageSeconds() > 0.5f);
 
 	// An explicit invalid sample also invalidates immediately.
-	latch.update(true, true, false, 0.8f, 1, 1600000, 1600000, 0.5f, 0.5f, -0.02f);
+	latch.update(true, true, false, 0.8f, 1, 1600000, 1600000, 0.5f, -0.02f);
 	assert(!latch.valid());
 	assert(nearlyEqual(latch.commandRoll(), -0.02f));
 

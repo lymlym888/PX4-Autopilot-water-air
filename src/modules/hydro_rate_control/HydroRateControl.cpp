@@ -533,21 +533,10 @@ void HydroRateControl::Run()
 		// update previous nav state
 		_prev_nav_state = _vehicle_status.nav_state;
 
-//---------------------------------小改动，为了无遥控测试用---------------------------------------
-		// //读手动操控信息
-		// _manual_control_setpoint_sub.copy(&_manual_control_setpoint);
-		// 读手动操控信息：如果没检测到(未发布/无效)，就用0
-		manual_control_setpoint_s manual_sp{};
-		const bool got_manual = _manual_control_setpoint_sub.update(&manual_sp);
-
-		if (got_manual && manual_sp.valid && manual_sp.timestamp != 0) {
-			_manual_control_setpoint = manual_sp;
-		} else {
-			// 没RC/无效 -> 全部置0，避免用到脏数据
-			_manual_control_setpoint = {};
-			_manual_control_setpoint.valid = false;
-		}
-//----------------------------------结束--------------------------------------------------------
+		// Preserve the publication edge for the independent new-controller latch.
+		const bool got_manual = _manual_control_setpoint_sub.updated();
+		// Read the latest manual command, including between publications.
+		_manual_control_setpoint_sub.copy(&_manual_control_setpoint);
 
 		//特技模式下，操控量映射到rate_sp
 		if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO)
@@ -671,11 +660,12 @@ void HydroRateControl::Run()
 				const bool nadrc_active = _active_controller == HydroRollControllerId::Nadrc;
 				const bool latch_was_valid = _manual_roll_latch.valid();
 				const hrt_abstime now = hrt_absolute_time();
+				const manual_control_setpoint_s &manual_sp = _manual_control_setpoint;
 				const bool manual_sample_valid = got_manual && manual_sp.valid && manual_sp.timestamp != 0
 							 && PX4_ISFINITE(manual_sp.roll);
 				_manual_roll_latch.update(true, got_manual, manual_sample_valid, manual_sp.roll,
 							 manual_sp.data_source, manual_sp.timestamp, now,
-							 radians(_param_hy_roll_max.get()), _param_hy_rll_man_tmo.get(), roll);
+							 radians(_param_hy_roll_max.get()), roll);
 
 				const bool latch_reset_event = latch_was_valid && !_manual_roll_latch.valid();
 

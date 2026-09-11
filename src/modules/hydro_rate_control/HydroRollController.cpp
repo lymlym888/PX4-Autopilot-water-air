@@ -78,7 +78,7 @@ void ManualRollCommandLatch::reset(float current_roll)
 
 void ManualRollCommandLatch::update(bool applicable, bool new_sample, bool sample_valid, float manual_roll,
 		uint8_t data_source, uint64_t sample_timestamp, uint64_t now,
-		float roll_scale, float timeout_s, float current_roll)
+		float roll_scale, float current_roll)
 {
 	const float safe_current_roll = std::isfinite(current_roll) ? current_roll : 0.f;
 
@@ -100,7 +100,7 @@ void ManualRollCommandLatch::update(bool applicable, bool new_sample, bool sampl
 		_age_s = timestamp_valid ? static_cast<float>(now - sample_timestamp) * 1e-6f
 			 : NAN;
 		_valid = sample_valid && std::isfinite(manual_roll) && std::isfinite(roll_scale)
-			 && std::isfinite(timeout_s) && timeout_s >= 0.f && timestamp_valid && _age_s <= timeout_s;
+			 && timestamp_valid;
 
 		if (_valid) {
 			_command_roll = manual_roll * roll_scale;
@@ -110,18 +110,14 @@ void ManualRollCommandLatch::update(bool applicable, bool new_sample, bool sampl
 		}
 
 	} else if (_valid) {
-		if (_sample_timestamp == 0 || _sample_timestamp > now || !std::isfinite(timeout_s) || timeout_s < 0.f) {
+		if (_sample_timestamp == 0 || _sample_timestamp > now) {
 			_valid = false;
 			_age_s = NAN;
 			_command_roll = safe_current_roll;
 
 		} else {
 			_age_s = static_cast<float>(now - _sample_timestamp) * 1e-6f;
-
-			if (_age_s > timeout_s) {
-				_valid = false;
-				_command_roll = safe_current_roll;
-			}
+			// Diagnostic age only. Missing publication is not an invalid command.
 		}
 	}
 }

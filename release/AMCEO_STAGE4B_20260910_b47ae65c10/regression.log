@@ -1,0 +1,13 @@
+CadrcGoldenTest: PASS
+HydroRollInfrastructureTest: PASS
+LadrcGoldenTest: PASS
+MceoGoldenTest: PASS
+AmceoGoldenTest: PASS
+AmceoMatlabConsistencyTest: PASS
+NadrcMathTest: PASS
+NadrcGoldenTest: PASS
+Stage2BSourceContractTest: PASS
+Stage3SourceContractTest: PASS
+Stage4SourceContractTest: PASS
+Stage4BNadrcSourceContractTest: PASS
+Test executables: /tmp/amceo-regression-20260910.ICog5V
