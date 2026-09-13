@@ -216,6 +216,8 @@ private:
 	bool _roll_controller_switch_blocked{false};
 	bool _new_controller_input_fault{false};
 	bool _new_controller_timing_fault{false};
+	// Any fallback sample breaks the observer/limiter applied-command history.
+	bool _new_controller_recovery_pending{false};
 	NewControllerParameters _applied_new_controller_parameters{};
 	NewControllerParameters _pending_new_controller_parameters{};
 	bool _new_controller_parameters_initialized{false};

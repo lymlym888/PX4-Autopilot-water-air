@@ -136,11 +136,11 @@ HydroRollControllerOutput AMCEOADRC::update(const HydroRollControllerInput &inpu
 		return {NAN, false, reset_event};
 	}
 
-	if (_z3 > 50.f) {
-		_z3 = 50.f;
+	if (_z3 > 0.25f) {
+		_z3 = 0.25f;
 
-	} else if (_z3 < -50.f) {
-		_z3 = -50.f;
+	} else if (_z3 < -0.25f) {
+		_z3 = -0.25f;
 	}
 
 	_e1 = _z1 - input.phi_ref;

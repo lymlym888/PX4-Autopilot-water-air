@@ -637,24 +637,10 @@ void HydroRateControl::Run()
 
 				} else {
 					if (_new_controller_timing_fault) {
-						HydroRollControllerInput recovery_input{};
-						recovery_input.phi = roll;
-						recovery_input.p = p;
-						recovery_input.command_roll = roll;
-						recovery_input.phi_ref = roll;
-						recovery_input.dt_measured = dt;
-						recovery_input.dt_used = dt;
-						recovery_input.u_applied_prev = _hydro_torque_setpoint.xyz[0];
-						recovery_input.timestamp_sample = vehicle_angular_velocity.timestamp_sample;
-						recovery_input.u_max = _param_hy_rll_u_max.get();
-						_manual_roll_latch.reset(roll);
-						_roll_reference_generator.reset(roll, roll);
-						_new_roll_limiter.reset(_hydro_torque_setpoint.xyz[0]);
-						resetNewController(_active_controller, recovery_input);
-						_new_controller_input_fault = false;
+						// Recovery below resets all integration histories once inputs
+						// are valid. A timing fault alone must not erase the RC latch
+						// and add a wait for another manual publication.
 						_new_controller_timing_fault = false;
-						controller_reset_event = true;
-						++_roll_controller_reset_counter;
 					}
 
 				const bool nadrc_active = _active_controller == HydroRollControllerId::Nadrc;
@@ -672,6 +658,7 @@ void HydroRateControl::Run()
 				if (latch_reset_event) {
 					_roll_reference_generator.reset(_manual_roll_latch.commandRoll(), roll);
 					controller_reset_event = true;
+					++_roll_controller_fault_counter;
 					++_roll_controller_reset_counter;
 				}
 
@@ -680,6 +667,32 @@ void HydroRateControl::Run()
 				diagnostic_manual_age_s = _manual_roll_latch.ageSeconds();
 				diagnostic_manual_data_source = _manual_roll_latch.dataSource();
 				diagnostic_manual_valid = _manual_roll_latch.valid();
+
+				// FALLBACK -> RECOVERY: use the last command actually sent downstream,
+				// not the limiter's stale pre-fallback history. Wait for finite inputs;
+				// the surrounding timing gate has already accepted this sample. Keep
+				// the valid manual latch (publication gaps are NOT input failures).
+				if (_new_controller_recovery_pending && _manual_roll_latch.valid()
+				    && PX4_ISFINITE(roll) && PX4_ISFINITE(p)
+				    && PX4_ISFINITE(_manual_roll_latch.commandRoll())
+				    && PX4_ISFINITE(_hydro_torque_setpoint.xyz[0])) {
+					HydroRollControllerInput recovery_input{};
+					recovery_input.phi = roll;
+					recovery_input.p = p;
+					recovery_input.command_roll = _manual_roll_latch.commandRoll();
+					recovery_input.phi_ref = roll;
+					recovery_input.dt_measured = dt;
+					recovery_input.dt_used = dt;
+					recovery_input.u_applied_prev = _hydro_torque_setpoint.xyz[0];
+					recovery_input.timestamp_sample = vehicle_angular_velocity.timestamp_sample;
+					recovery_input.u_max = _param_hy_rll_u_max.get();
+					_roll_reference_generator.reset(recovery_input.command_roll, roll);
+					_new_roll_limiter.reset(recovery_input.u_applied_prev);
+					resetNewController(_active_controller, recovery_input);
+					_new_controller_recovery_pending = false;
+					controller_reset_event = true;
+					++_roll_controller_reset_counter;
+				}
 
 				// IDs 2-4 use the common second-order reference generator. Classical
 				// NADRC (ID 5) consumes the latched command directly and owns its TD.
@@ -734,7 +747,7 @@ void HydroRateControl::Run()
 							  && PX4_ISFINITE(controller_input.u_max)
 							  && controller_input.u_max > 0.f;
 
-				if (diagnostic_reference_valid && input_finite) {
+				if (diagnostic_reference_valid && input_finite && !_new_controller_recovery_pending) {
 					const HydroRollControllerOutput output = updateNewController(_active_controller, controller_input);
 					diagnostic_u_requested = output.u_requested;
 					controller_reset_event = controller_reset_event || output.reset_event;
@@ -828,6 +841,10 @@ void HydroRateControl::Run()
 							     && PX4_ISFINITE(diagnostic_phi_ref_ddot);
 				}
 				}
+				// Include manual invalidity, timing faults, invalid reference/controller
+				// output and limiter failure. Only a successfully applied new command
+				// may continue without recovery on the following sample.
+				_new_controller_recovery_pending = !new_roll_output_available;
 			}
 
 			if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB

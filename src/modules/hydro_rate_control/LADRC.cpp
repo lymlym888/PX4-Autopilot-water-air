@@ -95,11 +95,11 @@ HydroRollControllerOutput LADRC::update(const HydroRollControllerInput &input)
 		return {NAN, false, reset_event};
 	}
 
-	if (_z3 > 10.f) {
-		_z3 = 10.f;
+	if (_z3 > 0.25f) {
+		_z3 = 0.25f;
 
-	} else if (_z3 < -10.f) {
-		_z3 = -10.f;
+	} else if (_z3 < -0.25f) {
+		_z3 = -0.25f;
 	}
 
 	_e1 = _z1 - input.phi_ref;

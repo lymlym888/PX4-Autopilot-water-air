@@ -1,5 +1,5 @@
-// Offline disturbance-state bound tests: existing LADRC bench bound +/-10,
-// other new controllers +/-50 rad/s^2. These are not output bounds.
+// User-requested +/-0.25 rad/s^2 disturbance-state bound for IDs 2-5.
+// This is a state bound, not an output bound or a hardware stability guarantee.
 #include "../LADRC.hpp"
 #include "../MCEO_ADRC.hpp"
 #include "../AMCEO_ADRC.hpp"
@@ -23,7 +23,7 @@ HydroRollControllerInput inputTemplate()
 }
 
 template<typename Controller>
-void checkLimit(Controller &controller, float expected_limit = 50.f)
+void checkLimit(Controller &controller, float expected_limit = 0.25f)
 {
 	for (float sign : {-1.f, 1.f}) {
 		auto input = inputTemplate();
@@ -69,7 +69,7 @@ int main()
 	assert(amceo.setParameters(config));
 	assert(nadrc.setParameters({10.1746f, 26.f, 9.8f, 20.f, 20.f, 2.f,
 		0.5f, 0.25f, 0.01f, 0.8f, 1.2f, 0.01f}));
-	checkLimit(ladrc, 10.f); // Preserve the pre-existing user LADRC bench bound.
+	checkLimit(ladrc);
 	checkLimit(mceo);
 	checkLimit(amceo);
 	checkLimit(nadrc);
@@ -94,8 +94,8 @@ int main()
 		near(mceo.z3(), amceo.z3());
 		near(mceo.z4(), amceo.z4());
 		near(m.u_requested, a.u_requested);
-		assert(std::fabs(mceo.z3()) <= 50.f);
-		hit_limit |= std::fabs(mceo.z3()) == 50.f;
+		assert(std::fabs(mceo.z3()) <= 0.25f);
+		hit_limit |= std::fabs(mceo.z3()) == 0.25f;
 	}
 	assert(hit_limit);
 	std::puts("Z3LimitTest: PASS (bounds, reset, nonfinite/overflow rejection, external limiter, saturated MCEO equivalence)");

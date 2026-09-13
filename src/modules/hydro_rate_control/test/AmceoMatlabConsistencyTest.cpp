@@ -61,12 +61,17 @@ int main()
 	// [z2+l1*eo, a*z2+b0*u+z3+l2*eo, z4+l3*eo, l4*eo].
 	assert(nearlyEqual((controller.z1() - 0.04f) / input.dt_used, 1.289318562f));
 	assert(nearlyEqual((controller.z2() + 0.07f) / input.dt_used, 47.30117416f));
-	assert(nearlyEqual(controller.z3() / input.dt_used, 697.6880493f));
+	// Continuous MATLAB z3_dot is unchanged, but the user-authorized state
+	// cap now activates here: 697.688... * 0.001 > 0.25. Do not claim the
+	// clipped state difference is the unconstrained continuous derivative.
+	assert(nearlyEqual(controller.z3(), 0.25f));
 	assert(nearlyEqual(controller.z4() / input.dt_used, 3951.584717f));
 
 	// Firmware intentionally computes control from the updated observer state,
 	// the current-observer convention inherited from Stage 3.
-	assert(nearlyEqual(output.u_requested, -0.1047442257f));
+	const float expected_unbounded_z3 = 697.6880493f * input.dt_used;
+	const float expected_bounded_u = -0.1047442257f + (expected_unbounded_z3 - 0.25f) / 9.4f;
+	assert(nearlyEqual(output.u_requested, expected_bounded_u));
 
 	std::puts("AmceoMatlabConsistencyTest: PASS");
 	return 0;
