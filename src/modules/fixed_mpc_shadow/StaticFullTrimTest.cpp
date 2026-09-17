@@ -15,18 +15,18 @@ static bool near(float a, float b) { return std::fabs(a-b) < 1.e-6f; }
 int main()
 {
 	StaticFullTrim latch;
-	latch.begin(0.f, false);
+	latch.begin(0.f);
 	latch.update(true, true, .5f, 1.f, 0.f, .98f);
-	assert(!latch.valid && latch.status == StaticTrimStatus::Unconfirmed);
+	assert(latch.valid && latch.status == StaticTrimStatus::Ready);
 	for (float invalid : {std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), 2.01f}) {
-		latch.begin(invalid, true);
+		latch.begin(invalid);
 		latch.update(true, true, .5f, 1.f, 0.f, .98f);
 		assert(!latch.valid && latch.status == StaticTrimStatus::InvalidConfig);
 	}
-	latch.begin(-.78757f, true);
+	latch.begin(-.78757f);
 	latch.update(true, true, .05f, .5f, 0.f, .98f);
 	assert(!latch.valid && latch.status == StaticTrimStatus::OutsideBounds && latch.candidate == -.78757f);
-	latch.begin(.1f, true);
+	latch.begin(.1f);
 	latch.update(true, false, .5f, 1.f, 0.f, .98f);
 	assert(!latch.valid && latch.status == StaticTrimStatus::WaitingForBase);
 	latch.update(true, true, .5f, 1.f, 0.f, .98f);
@@ -35,13 +35,13 @@ int main()
 	assert(latch.trim == .1f); // Data faults are rejected by prepare_full_input, not by moving trim.
 	latch.reset();
 	assert(!latch.valid && latch.status == StaticTrimStatus::Disabled);
-	latch.begin(0.f, false);
+	latch.begin(0.f);
 	latch.update(false, true, .5f, 1.f, 0.f, .98f);
 	assert(!latch.valid && latch.status == StaticTrimStatus::Disabled);
 	latch.update(true, true, .5f, 1.f, 0.f, .98f);
-	assert(!latch.valid && latch.status == StaticTrimStatus::Unconfirmed);
+	assert(latch.valid && latch.status == StaticTrimStatus::Ready);
 	// A genuinely reviewed nonzero trim must not be projected to another center.
-	latch.begin(-.78757f, true);
+	latch.begin(-.78757f);
 	latch.update(true, true, .5f, 1.f, 0.f, .98f);
 	assert(latch.valid && latch.trim == -.78757f && latch.status == StaticTrimStatus::ReadyLimited);
 	assert(near(latch.reserve, .21243f));
@@ -54,7 +54,7 @@ int main()
 		for (float limit : {.05f, .35f, .5f}) {
 			for (int sign : {-1, 1}) {
 				for (float roll : {-10.f, 0.f, 10.f}) {
-					latch.begin(configured, true);
+					latch.begin(configured);
 					latch.update(true, true, limit, 1.f, .02f, .98f);
 					assert(latch.valid && latch.trim == configured);
 					FullMpcInput input{latch.trim, limit, 1.f, .02f, .98f, sign};

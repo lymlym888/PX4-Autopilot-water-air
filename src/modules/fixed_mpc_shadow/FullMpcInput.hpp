@@ -11,6 +11,13 @@ inline float input_clamp(float value, float low, float high)
 	return value < low ? low : (value > high ? high : value);
 }
 
+// Depth/common mode has priority. Exhausted differential margin is saturation,
+// not invalid data; do not reduce the common command to recover roll authority.
+inline float full_differential_headroom(float mean_servo, float servo_limit)
+{
+	return 2.f * fmaxf(servo_limit - fabsf(mean_servo), 0.f);
+}
+
 // The identified input is Servo4 - Servo5, before PWM reversal/scaling.
 inline int model_input_sign(int left_index, int right_index)
 {
@@ -31,7 +38,7 @@ struct FullMpcInput {
 		return __builtin_isfinite(trim) && __builtin_isfinite(correction_limit) && correction_limit >= 0.f &&
 		       __builtin_isfinite(candidate_limit) && candidate_limit >= 0.f &&
 		       __builtin_isfinite(mean_servo) && __builtin_isfinite(servo_limit) && servo_limit >= 0.f &&
-		       fabsf(mean_servo) <= servo_limit && (model_sign == 1 || model_sign == -1);
+		       fabsf(mean_servo) <= 1.f && (model_sign == 1 || model_sign == -1);
 	}
 };
 
@@ -62,7 +69,7 @@ inline FullTrimProjection project_full_trim(const FullMpcInput &input)
 	FullTrimProjection result{};
 	if (!input.valid()) { return result; }
 	result.candidate = input.trim;
-	const float headroom = 2.f * (input.servo_limit - fabsf(input.mean_servo));
+	const float headroom = full_differential_headroom(input.mean_servo, input.servo_limit);
 	result.bound = fminf(input.candidate_limit, headroom);
 	result.reserve = fminf(input.correction_limit, result.bound);
 	const float center_limit = fmaxf(result.bound - result.reserve, 0.f);
@@ -79,11 +86,12 @@ inline FullMpcCommand implement_full_candidate(float model_proposal, const FullM
 					-input.correction_limit, input.correction_limit);
 	command.requested_target = input.trim + command.correction;
 	const float candidate = input_clamp(command.requested_target, -input.candidate_limit, input.candidate_limit);
-	const float headroom = 2.f * (input.servo_limit - fabsf(input.mean_servo));
+	const float headroom = full_differential_headroom(input.mean_servo, input.servo_limit);
 	command.target = input_clamp(candidate, -headroom, headroom);
 	command.model_input = input.model_sign * command.target;
 	command.candidate_clamped = fabsf(candidate - command.requested_target) > 1.e-6f;
-	command.headroom_clamped = fabsf(command.target - candidate) > 1.e-6f;
+	command.headroom_clamped = fabsf(command.target - candidate) > 1.e-6f ||
+		fabsf(input.mean_servo) > input.servo_limit;
 	return command;
 }
 
@@ -93,7 +101,7 @@ inline FullMpcCommand implement_full_constrained_candidate(float model_proposal,
 	FullMpcCommand command = implement_full_candidate(model_proposal, input);
 	const float preferred = command.target;
 	const float previous = input.model_sign * previous_model;
-	const float bound = fminf(input.candidate_limit, 2.f * (input.servo_limit - fabsf(input.mean_servo)));
+	const float bound = fminf(input.candidate_limit, full_differential_headroom(input.mean_servo, input.servo_limit));
 	const float low = fmaxf(-bound, input.trim - input.correction_limit);
 	const float high = fminf(bound, input.trim + input.correction_limit);
 	float target = preferred;

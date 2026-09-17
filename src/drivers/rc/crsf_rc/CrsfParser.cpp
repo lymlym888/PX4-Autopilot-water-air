@@ -142,6 +142,10 @@ static CrsfPacketDescriptor_t *FindCrsfDescriptor(const enum CRSF_PACKET_TYPE pa
 void CrsfParser_Init(void)
 {
 	QueueBuffer_Init(&rx_queue, rx_queue_buffer, RX_QUEUE_BUFFER_SIZE);
+	parser_state = PARSER_STATE_HEADER;
+	working_index = 0;
+	working_segment_size = HEADER_SIZE;
+	working_descriptor = NULL;
 }
 
 static float ConstrainF(const float x, const float min, const float max)
@@ -232,6 +236,26 @@ bool CrsfParser_LoadBuffer(const uint8_t *buffer, const uint32_t size)
 	return QueueBuffer_AppendBuffer(&rx_queue, buffer, size);
 }
 
+bool CrsfParser_LoadBufferWithRecovery(const uint8_t *buffer, const uint32_t size,
+		CrsfParserStatistics_t *const parser_statistics)
+{
+	if (size <= CrsfParser_FreeQueueSize()) {
+		return CrsfParser_LoadBuffer(buffer, size);
+	}
+
+	// An incomplete old frame must not prevent all subsequent UART reads from being parsed.
+	parser_statistics->queue_overflow_resets++;
+	parser_statistics->disposed_bytes += QueueBuffer_Count(&rx_queue);
+	CrsfParser_Init();
+
+	if (size > RX_QUEUE_BUFFER_SIZE) {
+		parser_statistics->disposed_bytes += size;
+		return false;
+	}
+
+	return CrsfParser_LoadBuffer(buffer, size);
+}
+
 uint32_t CrsfParser_FreeQueueSize(void)
 {
 	return RX_QUEUE_BUFFER_SIZE - QueueBuffer_Count(&rx_queue);
@@ -277,6 +301,24 @@ bool CrsfParser_TryParseCrsfPacket(CrsfPacket_t *const new_packet, CrsfParserSta
 
 			working_descriptor = FindCrsfDescriptor((enum CRSF_PACKET_TYPE)packet_type);
 
+			// Length includes type and CRC, but not address or length itself.
+			// Reject before subtraction: 0/1 would wrap working_segment_size and stall forever.
+			if (packet_size < PACKET_TYPE_SIZE + CRC_SIZE ||
+			    packet_size > CRSF_MAX_PACKET_LEN - HEADER_SIZE - PACKET_SIZE_SIZE) {
+				if (working_descriptor != NULL) {
+					parser_statistics->invalid_known_packet_sizes++;
+
+				} else {
+					parser_statistics->invalid_unknown_packet_sizes++;
+				}
+
+				parser_state = PARSER_STATE_HEADER;
+				working_segment_size = HEADER_SIZE;
+				working_index = 0;
+				buffer_count = QueueBuffer_Count(&rx_queue);
+				continue;
+			}
+
 			// If we know what this packet is...
 			if (working_descriptor != NULL) {
 				// Validate length
@@ -295,15 +337,6 @@ bool CrsfParser_TryParseCrsfPacket(CrsfPacket_t *const new_packet, CrsfParserSta
 				// We don't know what this packet is, so we'll let the parser continue
 				// just so that we can dequeue it in one shot
 				working_segment_size = packet_size - PACKET_SIZE_TYPE_SIZE;
-
-				if (working_index + working_segment_size + CRC_SIZE > CRSF_MAX_PACKET_LEN) {
-					parser_statistics->invalid_unknown_packet_sizes++;
-					parser_state = PARSER_STATE_HEADER;
-					working_segment_size = HEADER_SIZE;
-					working_index = 0;
-					buffer_count = QueueBuffer_Count(&rx_queue);
-					continue;
-				}
 			}
 
 			parser_state = PARSER_STATE_PAYLOAD;

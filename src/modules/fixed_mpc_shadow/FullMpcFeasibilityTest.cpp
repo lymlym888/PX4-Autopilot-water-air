@@ -93,6 +93,8 @@ int main()
 	input.mean_servo = .98f;
 	assert(project_full_trim(input).trim == 0.f && project_full_trim(input).reserve == 0.f);
 	input.mean_servo = 1.f;
+	assert(project_full_trim(input).valid && project_full_trim(input).bound == 0.f);
+	input.mean_servo = 1.01f;
 	assert(!project_full_trim(input).valid);
 	input.mean_servo = 0.f; input.trim = std::numeric_limits<float>::quiet_NaN();
 	assert(!project_full_trim(input).valid);

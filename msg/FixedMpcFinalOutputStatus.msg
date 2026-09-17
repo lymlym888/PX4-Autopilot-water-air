@@ -18,6 +18,11 @@ uint8 OWNER_INHIBITED = 4
 uint8 OWNER_INVALID = 5
 
 uint8 requested_mode
+uint8 effective_mode # Mode 6 is effective only in fresh NAVIGATION_STATE_STAB
+uint8 nav_state
+uint64 nav_state_timestamp
+bool flight_status_valid
+bool mode6_eligible
 uint8 selected_owner
 uint8 selector_reason
 uint8 upstream_fallback_reason
@@ -47,3 +52,7 @@ float32 final_implemented_diff_a
 float32 takeover_jump_a
 
 # TOPICS fixed_mpc_final_output_status
+
+# requested_mode is the raw FMPC_MODE parameter; effective_mode includes the STAB-only selector.
+# nav_state_timestamp separates flight-mode sessions even when a task misses a brief mode exit.
+# mode6_eligible is not proof of applied output; selected_owner=1 is MPC actuation.

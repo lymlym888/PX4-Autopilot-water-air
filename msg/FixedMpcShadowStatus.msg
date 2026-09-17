@@ -27,6 +27,9 @@ float32 fmpc_cand_max
 float32 fmpc_fcand_max
 
 uint8 fmpc_mode
+uint8 effective_mode # Raw fmpc_mode=6 can be inactive outside STAB
+uint8 nav_state
+bool mode6_eligible
 uint8 fmpc_act_en
 uint8 fmpc_sign_ok
 

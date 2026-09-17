@@ -1,0 +1,17 @@
+cmake_minimum_required(VERSION 3.16)
+project(crsf_parser_recovery_tests LANGUAGES CXX)
+enable_testing()
+
+add_executable(crsf_parser_recovery_test
+    CrsfParserRecoveryTest.cpp ../CrsfParser.cpp ../QueueBuffer.cpp ../Crc8.cpp)
+target_include_directories(crsf_parser_recovery_test PRIVATE ..)
+target_compile_features(crsf_parser_recovery_test PRIVATE cxx_std_14)
+target_compile_options(crsf_parser_recovery_test PRIVATE -Wall -Wextra -Wno-unused-parameter)
+option(CRSF_TEST_SANITIZERS "Enable host address/undefined behavior sanitizers" OFF)
+if(CRSF_TEST_SANITIZERS)
+    target_compile_options(crsf_parser_recovery_test PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+    target_link_options(crsf_parser_recovery_test PRIVATE -fsanitize=address,undefined)
+endif()
+foreach(case normal lengths restart crc unknown overflow noise)
+    add_test(NAME crsf_${case} COMMAND crsf_parser_recovery_test ${case})
+endforeach()

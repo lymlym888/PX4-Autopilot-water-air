@@ -14,6 +14,7 @@
 #include <uORB/topics/vehicle_torque_setpoint.h>
 #include <uORB/topics/vehicle_angular_velocity.h>
 #include <uORB/topics/vehicle_attitude.h>
+#include <uORB/topics/vehicle_status.h>
 #include <uORB/topics/fixed_mpc_shadow_status.h>
 #include <uORB/topics/fixed_mpc_tiny_correction.h>
 #include <uORB/topics/fixed_mpc_allocator_status.h>
@@ -25,6 +26,7 @@
 #include "FixedMPCParams.hpp"
 #include "FixedMpcInterface.hpp"
 #include "Mode6Session.hpp"
+#include "Mode6FlightMode.hpp"
 #include "StaticFullTrim.hpp"
 #include "ManualRollReference.hpp"
 
@@ -32,6 +34,9 @@ using namespace time_literals;
 
 namespace fixed_mpc_shadow
 {
+
+static_assert(kStabilizedNavState == vehicle_status_s::NAVIGATION_STATE_STAB,
+	      "Mode 6 eligibility must use the current STAB enum");
 
 static constexpr uint32_t kIntervalMs = 20;
 static constexpr uint32_t kIntervalUs = kIntervalMs * 1000;
@@ -50,13 +55,13 @@ struct RuntimeConfig {
 	bool bnd_en{false};
 	float bnd_lim{0.02f};
 	float sat_margin{0.02f};
-	bool full_en{false};
 	float full_lim{0.05f};
-	float full_dur_s{3.f};
+	FullMpcTuning full_tuning{};
+	bool tuning_sanitized{false};
 	uint8_t full_src{2};
 	bool full_trim_en{true};
 	float full_trim_a{0.f};
-	bool full_trim_confirmed{false};
+	uint64_t nav_epoch{0};
 	float g_basemin{0.10f};
 	float g_lim{0.05f};
 	float g_lowlim{0.02f};
@@ -67,7 +72,6 @@ struct RuntimeConfig {
 	bool act_lim_clamped{false};
 	bool bnd_lim_clamped{false};
 	bool full_lim_clamped{false};
-	bool full_dur_clamped{false};
 	float manual_roll_max_deg{NAN};
 	float manual_timeout_s{NAN};
 };
@@ -93,13 +97,12 @@ public:
 		_fmpc_bnd_en_handle = param_find("FMPC_BND_EN");
 		_fmpc_bnd_lim_handle = param_find("FMPC_BND_LIM");
 		_fmpc_sat_margin_handle = param_find("FMPC_SAT_MARGIN");
-		_fmpc_full_en_handle = param_find("FMPC_FULL_EN");
 		_fmpc_full_lim_handle = param_find("FMPC_FULL_LIM");
-		_fmpc_full_dur_handle = param_find("FMPC_FULL_DUR");
+		_fmpc_full_slew_handle = param_find("FMPC_FULL_SLEW");
+		_fmpc_error_gain_handle = param_find("FMPC_ERR_GAIN");
 		_fmpc_full_src_handle = param_find("FMPC_FULL_SRC");
 		_fmpc_full_trim_en_handle = param_find("FMPC_FTRIM_EN");
 		_fmpc_trim_a_handle = param_find("FMPC_TRIM_A");
-		_fmpc_trim_ok_handle = param_find("FMPC_TRIM_OK");
 		_fmpc_g_basemin_handle = param_find("FMPC_G_BASEMIN");
 		_fmpc_g_lim_handle = param_find("FMPC_G_LIM");
 		_fmpc_g_lowlim_handle = param_find("FMPC_G_LOWLIM");
@@ -237,10 +240,24 @@ private:
 		_loop_count++;
 
 		RuntimeConfig cfg = read_runtime_config();
+		_vehicle_status_sub.update(&_vehicle_status);
+		_flight_selection = select_flight_mode(cfg.mode, _vehicle_status.nav_state,
+			_vehicle_status.timestamp, _vehicle_status.nav_state_timestamp, hrt_absolute_time());
+		cfg.mode = _flight_selection.effective_mode;
+		cfg.nav_epoch = _flight_selection.nav_epoch;
 		_input_status = {};
 		_input_status.timestamp = now;
 		_input_status.mode = cfg.mode;
+		_input_status.configured_mode = _flight_selection.configured_mode;
+		_input_status.nav_state = _flight_selection.nav_state;
+		_input_status.nav_state_timestamp = _flight_selection.nav_epoch;
+		_input_status.flight_status_valid = _flight_selection.status_valid;
+		_input_status.mode6_eligible = _flight_selection.mode6_eligible;
 		_input_status.full_src = cfg.full_src;
+		_input_status.full_slew_rate = cfg.full_tuning.slew_rate;
+		_input_status.full_error_gain = cfg.full_tuning.error_gain;
+		_input_status.full_max_step = cfg.full_tuning.maximum_step();
+		_input_status.tuning_sanitized = cfg.tuning_sanitized;
 		_input_status.full_model_variant = cfg.mode == static_cast<uint8_t>(FmpcMode::FULL_ROLL_MPC_TEST) ?
 						  fixed_mpc_input_status_s::FULL_NOMINAL_TRIM : 0;
 		_full_result = {};
@@ -255,7 +272,9 @@ private:
 		_input_status.trim_status = static_cast<uint8_t>(_static_trim.status);
 		_input_status.trim_valid = cfg.full_trim_en && _static_trim.valid;
 		_final_output_sub.update(&_final_output);
-		_mode6_binding.update(_mode6_entry_timestamp, now, _final_output.requested_mode,
+		const bool same_flight_request = flight_source_matches(_flight_selection, _final_output.nav_state,
+			_final_output.nav_state_timestamp);
+		_mode6_binding.update(_mode6_entry_timestamp, now, same_flight_request ? _final_output.effective_mode : 1,
 				     _final_output.timestamp, _final_output.selector_epoch);
 
 		if (!update_inputs(state, snapshot)) {
@@ -275,7 +294,7 @@ private:
 			FullMpcInput input{};
 			const bool reference_ok = update_roll_reference(cfg, state);
 			if (reference_ok && prepare_full_input(cfg, snapshot, state, input)) {
-				_full_result = _mpc.solve_full_roll(state, input);
+				_full_result = _mpc.solve_full_roll(state, input, cfg.full_tuning);
 				result = _full_result.proposal;
 				if (!result.solver_success) { _input_status.rejection_mask |= SolverNonfinite; }
 			}
@@ -305,12 +324,13 @@ private:
 				math::min(fabsf(snapshot.delta_mpc_amplitude_limited - amplitude_offset) / amplitude_limit, 1.0f) : 0.f;
 		snapshot.delta_mpc_rate_limit_reference = state.previous_delta;
 		snapshot.delta_mpc_rate_limit_delta = result.delta_rate_limited - state.previous_delta;
-		snapshot.delta_mpc_rate_limit_max_step = kDDeltaMax;
+		const float maximum_step = mode_full ? cfg.full_tuning.maximum_step() : kDDeltaMax;
+		snapshot.delta_mpc_rate_limit_max_step = maximum_step;
 		snapshot.delta_mpc_rate_limited = result.delta_rate_limited;
 		snapshot.delta_mpc_rate_saturation_flag =
 			fabsf(snapshot.delta_mpc_rate_limited - snapshot.delta_mpc_amplitude_limited) > kDiagnosticTolerance;
-		snapshot.delta_mpc_rate_saturation_ratio = (kDDeltaMax > 0.f) ?
-				math::min(fabsf(snapshot.delta_mpc_amplitude_limited - snapshot.delta_mpc_rate_limit_reference) / kDDeltaMax, 1.0f) : 0.f;
+		snapshot.delta_mpc_rate_saturation_ratio = (maximum_step > 0.f) ?
+				math::min(fabsf(snapshot.delta_mpc_amplitude_limited - snapshot.delta_mpc_rate_limit_reference) / maximum_step, 1.0f) : 0.f;
 		snapshot.delta_mpc_clipped = snapshot.delta_mpc_amplitude_limited;
 		snapshot.delta_mpc_saturation_flag = snapshot.delta_mpc_amplitude_saturation_flag;
 		snapshot.delta_mpc_saturation_ratio = snapshot.delta_mpc_amplitude_saturation_ratio;
@@ -348,13 +368,10 @@ private:
 		int32_t bnd_en = 0;
 		float bnd_lim = 0.02f;
 		float sat_margin = 0.02f;
-		int32_t full_en = 0;
 		float full_lim = 0.05f;
-		float full_dur = 3.f;
 		int32_t full_src = 2;
 		int32_t full_trim_en = 1;
 		float full_trim_a = 0.f;
-		int32_t full_trim_confirmed = 0;
 		float g_basemin = 0.10f;
 		float g_lim = 0.05f;
 		float g_lowlim = 0.02f;
@@ -370,13 +387,13 @@ private:
 		if (_fmpc_bnd_en_handle != PARAM_INVALID) { param_get(_fmpc_bnd_en_handle, &bnd_en); }
 		if (_fmpc_bnd_lim_handle != PARAM_INVALID) { param_get(_fmpc_bnd_lim_handle, &bnd_lim); }
 		if (_fmpc_sat_margin_handle != PARAM_INVALID) { param_get(_fmpc_sat_margin_handle, &sat_margin); }
-		if (_fmpc_full_en_handle != PARAM_INVALID) { param_get(_fmpc_full_en_handle, &full_en); }
 		if (_fmpc_full_lim_handle != PARAM_INVALID) { param_get(_fmpc_full_lim_handle, &full_lim); }
-		if (_fmpc_full_dur_handle != PARAM_INVALID) { param_get(_fmpc_full_dur_handle, &full_dur); }
+		if (_fmpc_full_slew_handle != PARAM_INVALID) { param_get(_fmpc_full_slew_handle, &cfg.full_tuning.slew_rate); }
+		if (_fmpc_error_gain_handle != PARAM_INVALID) { param_get(_fmpc_error_gain_handle, &cfg.full_tuning.error_gain); }
+		cfg.tuning_sanitized = cfg.full_tuning.sanitize();
 		if (_fmpc_full_src_handle != PARAM_INVALID) { param_get(_fmpc_full_src_handle, &full_src); }
 		if (_fmpc_full_trim_en_handle != PARAM_INVALID) { param_get(_fmpc_full_trim_en_handle, &full_trim_en); }
 		if (_fmpc_trim_a_handle != PARAM_INVALID) { param_get(_fmpc_trim_a_handle, &full_trim_a); }
-		if (_fmpc_trim_ok_handle != PARAM_INVALID) { param_get(_fmpc_trim_ok_handle, &full_trim_confirmed); }
 		if (_fmpc_g_basemin_handle != PARAM_INVALID) { param_get(_fmpc_g_basemin_handle, &g_basemin); }
 		if (_fmpc_g_lim_handle != PARAM_INVALID) { param_get(_fmpc_g_lim_handle, &g_lim); }
 		if (_fmpc_g_lowlim_handle != PARAM_INVALID) { param_get(_fmpc_g_lowlim_handle, &g_lowlim); }
@@ -402,22 +419,15 @@ private:
 			cfg.bnd_lim_clamped = true;
 		}
 		cfg.sat_margin = math::constrain(sat_margin, 0.f, 0.2f);
-		cfg.full_en = (full_en == 1);
 		cfg.full_lim = math::max(full_lim, 0.f);
 		if (cfg.full_lim > kFmpcFullLimHardMax) {
 			cfg.full_lim = kFmpcFullLimHardMax;
 			cfg.full_lim_clamped = true;
 		}
-		cfg.full_dur_s = math::max(full_dur, 0.f);
-		if (cfg.full_dur_s > kFmpcFullDurHardMaxS) {
-			cfg.full_dur_s = kFmpcFullDurHardMaxS;
-			cfg.full_dur_clamped = true;
-		}
 		cfg.full_src = static_cast<uint8_t>(math::constrain(full_src, int32_t{0}, int32_t{2}));
 		cfg.full_trim_en = (full_trim_en == 1);
 		// Reject invalid static trim at entry; do not silently change a reviewed value.
 		cfg.full_trim_a = full_trim_a;
-		cfg.full_trim_confirmed = (full_trim_confirmed == 1);
 		cfg.g_basemin = math::max(g_basemin, 0.f);
 		cfg.g_lim = math::constrain(g_lim, 0.f, kShadowCorrectionLimit);
 		cfg.g_lowlim = math::constrain(g_lowlim, 0.f, cfg.g_lim);
@@ -640,7 +650,7 @@ private:
 		feedback.timestamp = _final_output.timestamp;
 		feedback.entry_timestamp = _final_output.source_mode_entry_timestamp;
 		feedback.session = _final_output.source_session_id;
-		feedback.mode = _final_output.requested_mode;
+		feedback.mode = _final_output.effective_mode;
 		feedback.left_index = _final_output.left_index;
 		feedback.right_index = _final_output.right_index;
 		feedback.left = _final_output.final_left;
@@ -684,10 +694,12 @@ private:
 			PX4_ISFINITE(snapshot.delta_base_A) && PX4_ISFINITE(snapshot.delta_base_B);
 
 		if (cfg.mode == full_mode) {
-			if (_previous_mode != full_mode) {
+			if (_previous_mode != full_mode || _mode6_nav_epoch != cfg.nav_epoch) {
+				_mode6_nav_epoch = cfg.nav_epoch;
+				_full_mode_start_timestamp = 0;
 				_full_trim_latched_valid = false;
-				_static_trim.begin(cfg.full_trim_a, cfg.full_trim_confirmed);
-				_mode6_entry_timestamp = snapshot.timestamp_us;
+				_static_trim.begin(cfg.full_trim_a);
+				_mode6_entry_timestamp = math::max(snapshot.timestamp_us, cfg.nav_epoch);
 				_mode6_command_sequence = 0;
 				_mode6_session_id++;
 
@@ -708,6 +720,7 @@ private:
 			_full_trim_latched_A = 0.f;
 			_full_trim_latched_B = 0.f;
 			_static_trim.reset();
+			_mode6_nav_epoch = 0;
 			_mode6_entry_timestamp = 0;
 			_mode6_command_sequence = 0;
 		}
@@ -993,14 +1006,6 @@ private:
 
 			snapshot.full_duration_s = (snapshot.timestamp_us - _full_mode_start_timestamp) / 1.0e6f;
 
-			if (full_duration_timed_out(cfg.full_dur_s, snapshot.full_duration_s)) {
-				_full_mode_start_timestamp = 0;
-				snapshot.fallback_reason = static_cast<uint8_t>(FallbackReason::FULL_DURATION_TIMEOUT);
-				snapshot.active_fallback_reason = snapshot.fallback_reason;
-				snapshot.gate_reason = static_cast<uint8_t>(FmpcGateReason::FULL_DURATION_TIMEOUT);
-				return;
-			}
-
 			snapshot.full_mpc_corr_a = command.correction;
 			const float requested_target_a = command.requested_target;
 			const float requested_target_b = -command.requested_target;
@@ -1065,6 +1070,8 @@ private:
 
 		msg.mode_entry_timestamp = mode_full ? _mode6_entry_timestamp : 0;
 		msg.selector_epoch = mode_full ? _mode6_binding.selector_epoch : 0;
+		msg.nav_state = _flight_selection.nav_state;
+		msg.nav_state_timestamp = _flight_selection.nav_epoch;
 		msg.command_sequence = mode_full ? _mode6_command_sequence : 0;
 		msg.mode_session_id = mode_full ? _mode6_session_id : 0;
 		msg.mode = diag.fmpc_mode;
@@ -1115,7 +1122,10 @@ private:
 		msg.fmpc_act_lim = diag.fmpc_act_lim;
 		msg.fmpc_cand_max = diag.fmpc_cand_max;
 		msg.fmpc_fcand_max = diag.fmpc_fcand_max;
-		msg.fmpc_mode = diag.fmpc_mode;
+		msg.fmpc_mode = _flight_selection.configured_mode;
+		msg.effective_mode = diag.fmpc_mode;
+		msg.nav_state = _flight_selection.nav_state;
+		msg.mode6_eligible = _flight_selection.mode6_eligible;
 		msg.fmpc_act_en = diag.fmpc_act_en ? 1 : 0;
 		msg.fmpc_sign_ok = diag.fmpc_sign_ok ? 1 : 0;
 		msg.diag_ok = diag.diag_consistency_ok ? 1 : 0;
@@ -1182,7 +1192,8 @@ private:
 		s.base_command_age_ms = 1.0e9f;
 		s.hydro_torque_setpoint_age_ms = 1.0e9f;
 		s.delta_mpc_shadow_correction_limit = kShadowCorrectionLimit;
-		s.delta_mpc_rate_limit_max_step = kDDeltaMax;
+		s.delta_mpc_rate_limit_max_step = cfg.mode == static_cast<uint8_t>(FmpcMode::FULL_ROLL_MPC_TEST) ?
+						 cfg.full_tuning.maximum_step() : kDDeltaMax;
 		s.diag_consistency_ok = true;
 		s.fallback_reason = static_cast<uint8_t>(FallbackReason::UNKNOWN);
 		s.active_fallback_reason = static_cast<uint8_t>(FallbackReason::UNKNOWN);
@@ -1196,9 +1207,9 @@ private:
 		s.fmpc_bnd_en = cfg.bnd_en;
 		s.fmpc_bnd_lim = cfg.bnd_lim;
 		s.fmpc_sat_margin = cfg.sat_margin;
-		s.fmpc_full_en = cfg.full_en;
+		s.fmpc_full_en = false; // Deprecated commissioning field, retained for old log readers.
 		s.fmpc_full_lim = cfg.full_lim;
-		s.fmpc_full_dur_s = cfg.full_dur_s;
+		s.fmpc_full_dur_s = 0.f; // Continuous while STAB/Mode 6 remains healthy.
 		s.fmpc_full_src = cfg.full_src;
 		s.fmpc_full_trim_en = cfg.full_trim_en;
 		s.fmpc_g_basemin = cfg.g_basemin;
@@ -1436,6 +1447,10 @@ private:
 	}
 
 	uORB::Subscription _vehicle_attitude_sub{ORB_ID(vehicle_attitude)};
+	uORB::Subscription _vehicle_status_sub{ORB_ID(vehicle_status)};
+	vehicle_status_s _vehicle_status{};
+	FlightModeSelection _flight_selection{};
+	uint64_t _mode6_nav_epoch{0};
 	uORB::Subscription _manual_control_sub{ORB_ID(manual_control_setpoint)};
 	uORB::Subscription _vehicle_angular_velocity_sub{ORB_ID(vehicle_angular_velocity)};
 	uORB::Subscription _hydro_servos_sub{ORB_ID(hydro_servos)};
@@ -1470,13 +1485,12 @@ private:
 	param_t _fmpc_bnd_en_handle{PARAM_INVALID};
 	param_t _fmpc_bnd_lim_handle{PARAM_INVALID};
 	param_t _fmpc_sat_margin_handle{PARAM_INVALID};
-	param_t _fmpc_full_en_handle{PARAM_INVALID};
 	param_t _fmpc_full_lim_handle{PARAM_INVALID};
-	param_t _fmpc_full_dur_handle{PARAM_INVALID};
+	param_t _fmpc_full_slew_handle{PARAM_INVALID};
+	param_t _fmpc_error_gain_handle{PARAM_INVALID};
 	param_t _fmpc_full_src_handle{PARAM_INVALID};
 	param_t _fmpc_full_trim_en_handle{PARAM_INVALID};
 	param_t _fmpc_trim_a_handle{PARAM_INVALID};
-	param_t _fmpc_trim_ok_handle{PARAM_INVALID};
 	param_t _fmpc_g_basemin_handle{PARAM_INVALID};
 	param_t _fmpc_g_lim_handle{PARAM_INVALID};
 	param_t _fmpc_g_lowlim_handle{PARAM_INVALID};

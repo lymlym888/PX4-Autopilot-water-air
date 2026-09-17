@@ -76,17 +76,19 @@ MpcResult FixedLinearMPC::solve_lqr_clipping(const MpcState &state) {
 	return result;
 }
 
-FullMpcResult FixedLinearMPC::solve_full_roll(const MpcState &state, const FullMpcInput &input)
+FullMpcResult FixedLinearMPC::solve_full_roll(const MpcState &state, const FullMpcInput &input,
+		const FullMpcTuning &tuning)
 {
 	FullMpcResult result{};
-	if (!input.valid() || !__builtin_isfinite(state.phi_rad) || !__builtin_isfinite(state.p_rad_s) ||
+	if (!input.valid() || !tuning.valid() || !__builtin_isfinite(state.phi_rad) || !__builtin_isfinite(state.p_rad_s) ||
 	    !__builtin_isfinite(state.previous_delta)) {
 		return result;
 	}
 
 	result.model_trim = input.model_sign * input.trim;
 	const float previous_correction = state.previous_delta - result.model_trim;
-	float phi_free = state.phi_rad;
+	// Scale only the initial angle error feedback, not rate damping, trim or the whole output.
+	float phi_free = state.phi_rad * tuning.error_gain;
 	float phi_sensitivity = 0.f;
 	float p_sensitivity = 0.f;
 	float curvature = kRDDelta;
@@ -125,14 +127,14 @@ FullMpcResult FixedLinearMPC::solve_full_roll(const MpcState &state, const FullM
 	// The shared command projection still enforces total differential and headroom.
 	const float amplitude = input_clamp(raw_correction, -input.correction_limit, input.correction_limit);
 	result.command = implement_full_constrained_candidate(result.model_trim + amplitude,
-			 state.previous_delta, kDDeltaMax, input);
+			 state.previous_delta, tuning.maximum_step(), input);
 	result.unconstrained_correction = input.model_sign * raw_correction;
 	result.proposal.delta_raw = result.model_trim + raw_correction;
 	result.proposal.delta_amplitude_limited = result.model_trim + amplitude;
 	result.proposal.delta_rate_limited = result.command.model_input;
 	result.proposal.delta_clipped = result.proposal.delta_amplitude_limited;
 	result.proposal.delta = result.command.model_input;
-	result.rate_recovery = fabsf(result.command.model_input - state.previous_delta) > kDDeltaMax + 1.e-6f;
+	result.rate_recovery = fabsf(result.command.model_input - state.previous_delta) > tuning.maximum_step() + 1.e-6f;
 	result.proposal.solver_success = __builtin_isfinite(result.command.model_input) &&
 					__builtin_isfinite(result.proposal.delta_raw);
 	return result;

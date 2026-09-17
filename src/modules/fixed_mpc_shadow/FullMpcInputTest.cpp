@@ -112,6 +112,9 @@ int main()
 	clamped=implement_full_candidate(-.8f,input);
 	assert(clamped.headroom_clamped && close(clamped.target,.02f));
 	input.mean_servo=1.f;
+	const auto depth_saturated=mpc.solve_full_roll({0.f,0.f,0.f},input);
+	assert(depth_saturated.proposal.solver_success && depth_saturated.command.target==0.f);
+	input.mean_servo=1.01f;
 	assert(!mpc.solve_full_roll({0.f,0.f,0.f},input).proposal.solver_success);
 	input.mean_servo=0.f;input.trim=std::numeric_limits<float>::quiet_NaN();
 	assert(!mpc.solve_full_roll({0.f,0.f,0.f},input).proposal.solver_success);

@@ -32,6 +32,11 @@
  ****************************************************************************/
 
 #include "HydroAllocator.hpp"
+#include "../fixed_mpc_shadow/Mode6FlightMode.hpp"
+#include "../fixed_mpc_shadow/FullMpcInput.hpp"
+
+static_assert(fixed_mpc_shadow::kStabilizedNavState == vehicle_status_s::NAVIGATION_STATE_STAB,
+	      "Mode 6 eligibility must use the current STAB enum");
 
 #include <lib/matrix/matrix/math.hpp>
 
@@ -91,7 +96,6 @@ HydroAllocator::HydroAllocator() :
 	_param_handles.fmpc_bnd_en = param_find("FMPC_BND_EN");
 	_param_handles.fmpc_bnd_lim = param_find("FMPC_BND_LIM");
 	_param_handles.fmpc_sat_margin = param_find("FMPC_SAT_MARGIN");
-	_param_handles.fmpc_full_en = param_find("FMPC_FULL_EN");
 	_param_handles.fmpc_full_lim = param_find("FMPC_FULL_LIM");
 	_param_handles.fmpc_full_trim_en = param_find("FMPC_FTRIM_EN");
 	_param_handles.fmpc_fcand_max = param_find("FMPC_FCAND_MAX");
@@ -148,7 +152,6 @@ HydroAllocator::parameters_update(bool force)
 	if (_param_handles.fmpc_bnd_en != PARAM_INVALID) { param_get(_param_handles.fmpc_bnd_en, &_params.fmpc_bnd_en); }
 	if (_param_handles.fmpc_bnd_lim != PARAM_INVALID) { param_get(_param_handles.fmpc_bnd_lim, &_params.fmpc_bnd_lim); }
 	if (_param_handles.fmpc_sat_margin != PARAM_INVALID) { param_get(_param_handles.fmpc_sat_margin, &_params.fmpc_sat_margin); }
-	if (_param_handles.fmpc_full_en != PARAM_INVALID) { param_get(_param_handles.fmpc_full_en, &_params.fmpc_full_en); }
 	if (_param_handles.fmpc_full_lim != PARAM_INVALID) { param_get(_param_handles.fmpc_full_lim, &_params.fmpc_full_lim); }
 	if (_param_handles.fmpc_full_trim_en != PARAM_INVALID) { param_get(_param_handles.fmpc_full_trim_en, &_params.fmpc_full_trim_en); }
 	if (_param_handles.fmpc_fcand_max != PARAM_INVALID) { param_get(_param_handles.fmpc_fcand_max, &_params.fmpc_fcand_max); }
@@ -665,8 +668,13 @@ void HydroAllocator::Run()
 
 	fixed_mpc_allocator_status_s fixed_mpc_allocator_status_msg{};
 	fixed_mpc_allocator_status_msg.timestamp = hrt_absolute_time();
-	fixed_mpc_allocator_status_msg.requested_mode = static_cast<uint8_t>(
-		math::constrain(_params.fmpc_mode, int32_t{0}, int32_t{6}));
+	const auto flight = fixed_mpc_shadow::select_flight_mode(static_cast<uint8_t>(
+		math::constrain(_params.fmpc_mode, int32_t{0}, int32_t{6})), _vehicle_status.nav_state,
+		_vehicle_status.timestamp, _vehicle_status.nav_state_timestamp, hrt_absolute_time());
+	fixed_mpc_allocator_status_msg.configured_mode = flight.configured_mode;
+	fixed_mpc_allocator_status_msg.requested_mode = flight.effective_mode;
+	fixed_mpc_allocator_status_msg.nav_state = flight.nav_state;
+	fixed_mpc_allocator_status_msg.nav_state_timestamp = flight.nav_epoch;
 	fixed_mpc_allocator_status_msg.fb = true;
 	fixed_mpc_allocator_status_msg.fb_r = static_cast<uint8_t>(fixed_mpc_shadow::FallbackReason::BASE_COMMAND_INVALID);
 
@@ -713,14 +721,17 @@ void HydroAllocator::Run()
 		const bool corr_topic_fresh = corr_age_ms <= fixed_mpc_shadow::kAllocatorCorrectionTopicMaxAgeMs;
 		const bool mode_active_tiny = _params.fmpc_mode == static_cast<int32_t>(fixed_mpc_shadow::FmpcMode::ACTIVE_TINY);
 		const bool mode_active_bounded = _params.fmpc_mode == static_cast<int32_t>(fixed_mpc_shadow::FmpcMode::ACTIVE_BOUNDED_MPC);
-		const bool mode_full_roll = _params.fmpc_mode == static_cast<int32_t>(fixed_mpc_shadow::FmpcMode::FULL_ROLL_MPC_TEST);
+		const bool mode_full_roll = flight.mode6_eligible;
 		const bool any_active_mode = mode_active_tiny || mode_active_bounded || mode_full_roll;
 		const bool active_param_enabled = mode_full_roll ||
 			((_params.fmpc_act_en == 1) && (_params.fmpc_sign_ok == 1));
 		const bool mode_enabled = mode_active_tiny ||
 			(mode_active_bounded && (_params.fmpc_bnd_en == 1)) ||
 			mode_full_roll;
-		const bool corr_msg_active = any_active_mode && (_fixed_mpc_tiny_correction_msg.mode == static_cast<uint8_t>(_params.fmpc_mode));
+		const bool corr_msg_active = any_active_mode && (_fixed_mpc_tiny_correction_msg.mode == flight.effective_mode) &&
+			(!mode_full_roll || (fixed_mpc_shadow::flight_source_matches(flight,
+				_fixed_mpc_tiny_correction_msg.nav_state, _fixed_mpc_tiny_correction_msg.nav_state_timestamp) &&
+				_fixed_mpc_tiny_correction_msg.mode_entry_timestamp >= flight.nav_epoch));
 
 		if (fixed_mpc_allocator_status_msg.base_ok && corr_topic_fresh && any_active_mode && active_param_enabled &&
 		    mode_enabled && corr_msg_active && _fixed_mpc_tiny_correction_msg.act_allow && !_fixed_mpc_tiny_correction_msg.fb &&
@@ -813,7 +824,7 @@ void HydroAllocator::Run()
 			}
 
 			if (allow_apply && mode_full_roll) {
-				const float max_abs_diff = 2.f * math::max(abs_limit - fabsf(mean_servo), 0.f);
+				const float max_abs_diff = fixed_mpc_shadow::full_differential_headroom(mean_servo, abs_limit);
 				target_diff_a = math::constrain(target_diff_a, -max_abs_diff, max_abs_diff);
 				target_diff_b = -target_diff_a;
 			}

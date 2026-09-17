@@ -2,6 +2,9 @@ uint64 timestamp
 uint64 source_timestamp
 uint64 mode_entry_timestamp
 uint64 selector_epoch # Same-command producer acknowledgement, not a latest-value join
+uint64 nav_state_timestamp # Allocator flight-mode generation; MPC source must match it
+uint8 nav_state
+uint8 configured_mode # Raw FMPC_MODE; requested_mode is the flight-mode-qualified mode
 
 uint32 source_sequence
 uint32 mode_session_id

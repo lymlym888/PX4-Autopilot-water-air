@@ -9,7 +9,10 @@
  * 3 = ACTIVE_TINY
  * 4 = FALLBACK / CADRC_ONLY
  * 5 = ACTIVE_BOUNDED_MPC
- * 6 = FULL_ROLL_MPC_TEST
+ * 6 = full roll-MPC only in Stabilized flight mode (NAVIGATION_STATE_STAB).
+ * Outside Stabilized, 6 uses the Mode 1 legacy flight-mode path with no MPC output.
+ * No separate full-enable, trim-confirmation or test-duration parameter is required.
+ * Sensor/reference validity, source freshness and actuator bounds still apply.
  *
  * @group Fixed MPC
  */
@@ -20,6 +23,7 @@ PARAM_DEFINE_INT32(FMPC_MODE, 1);
  *
  * 0 = forbidden
  * 1 = may be allowed
+ * Used by Mode 3/5 only; does not gate Mode 6.
  *
  * @group Fixed MPC
  */
@@ -30,6 +34,7 @@ PARAM_DEFINE_INT32(FMPC_ACT_EN, 0);
  *
  * 0 = not confirmed
  * 1 = confirmed by staged bench check
+ * Used by Mode 3/5 only; does not gate Mode 6.
  *
  * @group Fixed MPC
  */
@@ -144,16 +149,6 @@ PARAM_DEFINE_FLOAT(FMPC_BND_LIM, 0.02f);
 PARAM_DEFINE_FLOAT(FMPC_SAT_MARGIN, 0.02f);
 
 /**
- * Legacy full roll-MPC commissioning interlock.
- *
- * Retained for compatibility and diagnostics. FMPC_MODE=6 selects the
- * authoritative full roll-MPC path independently of this value.
- *
- * @group Fixed MPC
- */
-PARAM_DEFINE_INT32(FMPC_FULL_EN, 0);
-
-/**
  * Full roll-MPC trim-relative differential correction limit.
  *
  * Left-minus-right normalized correction, not a single-servo travel fraction.
@@ -169,19 +164,41 @@ PARAM_DEFINE_INT32(FMPC_FULL_EN, 0);
 PARAM_DEFINE_FLOAT(FMPC_FULL_LIM, 0.05f);
 
 /**
- * Full roll-MPC active duration timeout.
+ * Mode 6 differential command slew rate.
  *
- * 0 disables the Mode 6 duration timeout.
- * Positive values retain the finite full-MPC test-duration timeout.
+ * Normalized left-minus-right differential change per second, not servo deg/s.
+ * At the fixed 50-Hz update rate, 3.0 retains the original 0.06 step.
+ * Applies only to Mode 6. Physical-bound recovery may exceed this normal step.
+ * Read at runtime without reboot. Adjust in Mode 1, then re-test Mode 6.
+ * Higher values may increase jitter and actuator loads. Zero does not disable it.
  *
- * Runtime-clamped to <= 5.0 s in code.
- *
- * @unit s
- * @min 0.0
- * @max 5.0
+ * @unit 1/s
+ * @min 1.5
+ * @max 6.0
+ * @decimal 2
+ * @increment 0.3
  * @group Fixed MPC
  */
-PARAM_DEFINE_FLOAT(FMPC_FULL_DUR, 3.0f);
+PARAM_DEFINE_FLOAT(FMPC_FULL_SLEW, 3.0f);
+
+/**
+ * Mode 6 roll-angle-error feedback multiplier.
+ *
+ * Multiplies actual roll minus reference before full-roll prediction.
+ * 1.0 retains the original response. Larger values request stronger correction
+ * for the same angle error, including small errors. Not a deadband or Q weight.
+ * Rate feedback, trim, model matrices and output limits are not multiplied.
+ * Applies at all error magnitudes in Mode 6 only; limits can mask its effect.
+ * Read at runtime without reboot. Adjust in Mode 1, one setting at a time.
+ * Increased gain can reduce damping and amplify noise; bench/water validation required.
+ *
+ * @min 0.5
+ * @max 2.0
+ * @decimal 2
+ * @increment 0.1
+ * @group Fixed MPC
+ */
+PARAM_DEFINE_FLOAT(FMPC_ERR_GAIN, 1.0f);
 
 /**
  * Full roll-MPC source selection.
@@ -195,11 +212,11 @@ PARAM_DEFINE_FLOAT(FMPC_FULL_DUR, 3.0f);
 PARAM_DEFINE_INT32(FMPC_FULL_SRC, 2);
 
 /**
- * Use a reviewed static differential trim in full roll-MPC mode.
+ * Use a configured static differential trim in full roll-MPC mode.
  *
  * 0 = old absolute full-target behavior
- * 1 = use FMPC_TRIM_A with FMPC_TRIM_OK=1, frozen on Mode 6 entry.
- * Live CADRC output is not a trim source. Unconfirmed trim prevents takeover.
+ * 1 = use FMPC_TRIM_A, validated and frozen on each STAB/Mode 6 entry.
+ * Live CADRC output is not a trim source. No separate confirmation is required.
  *
  * @group Fixed MPC
  */
@@ -210,8 +227,8 @@ PARAM_DEFINE_INT32(FMPC_FTRIM_EN, 1);
  *
  * Normalized HY_SV0 minus HY_SV1 command, before PWM reversal/scaling.
  * Zero denotes zero command differential, not a calibrated mechanical angle.
- * Set and review in Mode 1, then set FMPC_TRIM_OK=1 before entering Mode 6.
- * The value and confirmation are captured on entry and do not follow CADRC.
+ * Review the value and physical mapping in Mode 1 before entering STAB/Mode 6.
+ * The value is captured on entry and does not follow CADRC. No confirmation flag.
  * An out-of-bounds value is rejected, never silently projected or zeroed.
  *
  * @unit norm
@@ -220,19 +237,3 @@ PARAM_DEFINE_INT32(FMPC_FTRIM_EN, 1);
  * @group Fixed MPC
  */
 PARAM_DEFINE_FLOAT(FMPC_TRIM_A, 0.0f);
-
-/**
- * Static full roll-MPC trim has been explicitly reviewed.
- *
- * 0 = not configured/reviewed; no trim-aware Mode 6 takeover.
- * 1 = use FMPC_TRIM_A for the next Mode 6 session.
- * This is operator confirmation, not proof of measured angle or water trim.
- * Set to 0 before changing trim or servo mapping, and review before setting 1.
- * Changes during Mode 6 take effect only on the next entry. Use Mode 1 to exit.
- *
- * @min 0
- * @max 1
- * @boolean
- * @group Fixed MPC
- */
-PARAM_DEFINE_INT32(FMPC_TRIM_OK, 0);

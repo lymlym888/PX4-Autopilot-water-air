@@ -26,12 +26,21 @@ float32 implemented_target
 float32 model_trim
 float32 model_correction
 float32 unconstrained_correction
+float32 full_slew_rate # Effective Mode 6 differential rate, normalized units/s
+float32 full_error_gain # Effective angle-error feedback multiplier, not a Q weight
+float32 full_max_step # Effective normal differential step at the fixed 50-Hz update
+bool tuning_sanitized # Invalid/out-of-range new tuning replaced by defaults/bounds
 float32 trim_candidate_a
 float32 trim_bound_a
 float32 trim_reserve_a
 
 uint8 FULL_NOMINAL_TRIM = 2
 uint8 mode
+uint8 configured_mode # Raw parameter, while mode is flight-mode-qualified
+uint8 nav_state
+uint64 nav_state_timestamp
+bool flight_status_valid
+bool mode6_eligible
 uint8 full_src
 uint8 full_model_variant
 int8 model_sign
@@ -42,7 +51,7 @@ bool slew_limited
 bool constraint_conflict
 
 uint8 TRIM_DISABLED = 0
-uint8 TRIM_UNCONFIRMED = 1
+uint8 TRIM_UNCONFIRMED = 1 # Reserved for older firmware; no confirmation parameter remains
 uint8 TRIM_INVALID_CONFIG = 2
 uint8 TRIM_WAITING_BASE = 3
 uint8 TRIM_OUTSIDE_BOUNDS = 4
@@ -91,11 +100,14 @@ bool reference_valid
 # slew_limited denotes a joint-interval rate constraint or recovery limiting the preferred target.
 # constraint_conflict means the correction band and physical range no longer intersect.
 # Mode 6: manual_control_setpoint.roll * HY_ROLL_MAX is the angle reference.
-# Prediction uses actual roll minus reference; angular-rate reference stays zero.
+# Prediction uses (actual roll minus reference) * full_error_gain; rate reference stays zero.
+# roll_error_deg remains the unscaled physical error. Only Mode 6 uses these tuning fields.
 # Physical roll remains in fixed_mpc_shadow_status.roll_deg, never replaced by error.
 # reference_sample is the original manual input timestamp, not its republish time.
 # Both reference timestamps must be younger than COM_RC_LOSS_T; valid must be true.
 # reference_source uses standard manual_control_setpoint data_source values.
 # Rejection bit 17 denotes an invalid manual reference; reference_status gives detail.
 # reference_valid does not imply MPC applied; all existing hard-fault checks remain.
+# mode is effective mode; configured_mode is the raw FMPC_MODE parameter.
+# Mode 6 requires a fresh STAB vehicle_status; a new nav_state_timestamp starts a new session.
 # TOPICS fixed_mpc_input_status

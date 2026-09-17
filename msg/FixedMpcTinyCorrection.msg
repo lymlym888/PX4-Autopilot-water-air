@@ -1,6 +1,8 @@
 uint64 timestamp
 uint64 mode_entry_timestamp
 uint64 selector_epoch # Echo of final selector request, zero until acknowledged
+uint64 nav_state_timestamp # Producer's flight-mode generation for this command
+uint8 nav_state
 
 uint32 command_sequence
 uint32 mode_session_id

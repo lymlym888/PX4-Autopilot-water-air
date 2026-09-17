@@ -107,7 +107,7 @@ int main()
 	}
 	// Persistent static-trim plus solver loop: stick sign, equilibrium and limits.
 	StaticFullTrim trim;
-	trim.begin(0.f, true); trim.update(true, true, 1.5f, 1.5f, 0.f, .98f);
+	trim.begin(0.f); trim.update(true, true, 1.5f, 1.5f, 0.f, .98f);
 	const FullMpcInput input{trim.trim, 1.5f, 1.5f, 0.f, .98f, -1};
 	for (float stick : {-.2f, 0.f, .2f}) {
 		auto sample = good; sample.roll = stick;

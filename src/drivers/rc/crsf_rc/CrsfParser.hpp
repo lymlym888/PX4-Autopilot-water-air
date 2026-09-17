@@ -70,6 +70,7 @@ struct CrsfParserStatistics_t {
 	uint32_t crcs_invalid;
 	uint32_t invalid_known_packet_sizes;
 	uint32_t invalid_unknown_packet_sizes;
+	uint32_t queue_overflow_resets;
 };
 
 enum CRSF_MESSAGE_TYPE {
@@ -88,5 +89,8 @@ typedef struct {
 
 void CrsfParser_Init(void);
 bool CrsfParser_LoadBuffer(const uint8_t *buffer, const uint32_t size);
+// On overflow discard incomplete buffered data, reset framing and retain the new chunk if it fits.
+bool CrsfParser_LoadBufferWithRecovery(const uint8_t *buffer, const uint32_t size,
+		CrsfParserStatistics_t *const parser_statistics);
 uint32_t CrsfParser_FreeQueueSize(void);
 bool CrsfParser_TryParseCrsfPacket(CrsfPacket_t *const new_packet, CrsfParserStatistics_t *const parser_statistics);

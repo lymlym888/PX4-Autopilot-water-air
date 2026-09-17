@@ -189,7 +189,7 @@ void CrsfRc::Run()
 		_bytes_rx += new_bytes;
 
 		// Load new bytes into the CRSF parser buffer
-		CrsfParser_LoadBuffer(_rcs_buf, new_bytes);
+		CrsfParser_LoadBufferWithRecovery(_rcs_buf, new_bytes, &_packet_parser_statistics);
 
 		// Scan the parse buffer for messages, one at a time
 		CrsfPacket_t new_crsf_packet;
@@ -503,6 +503,7 @@ int CrsfRc::print_status()
 	PX4_INFO_RAW("Invalid CRCs: %" PRIu32 "\n", _packet_parser_statistics.crcs_invalid);
 	PX4_INFO_RAW("Invalid known packet sizes: %" PRIu32 "\n", _packet_parser_statistics.invalid_known_packet_sizes);
 	PX4_INFO_RAW("Invalid unknown packet sizes: %" PRIu32 "\n", _packet_parser_statistics.invalid_unknown_packet_sizes);
+	PX4_INFO_RAW("RX queue overflow resets: %" PRIu32 "\n", _packet_parser_statistics.queue_overflow_resets);
 
 	return 0;
 }

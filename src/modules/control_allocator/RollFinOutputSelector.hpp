@@ -37,9 +37,11 @@ enum class Reason : uint8_t {
 	NoFreshFallback = 14,
 	TargetClamped = 15,
 	ChannelsInhibited = 16,
+	FlightModeMismatch = 17,
 };
 
 struct SourceCommand {
+	uint64_t authority_epoch{0};
 	uint64_t status_timestamp{0};
 	uint64_t source_timestamp{0};
 	uint64_t mode_entry_timestamp{0};
@@ -62,6 +64,8 @@ struct SourceCommand {
 };
 
 struct Input {
+	uint64_t authority_epoch{0}; // nav_state_timestamp for a STAB-only session
+	bool require_current_legacy{false}; // Never reuse an MPC cache outside the eligible flight mode.
 	uint64_t now{0};
 	uint8_t requested_mode{0};
 	int left_index{-1};
@@ -82,6 +86,7 @@ struct Input {
 };
 
 struct State {
+	uint64_t previous_authority_epoch{0};
 	bool initialized{false};
 	uint8_t previous_mode{0};
 	uint64_t mode_entry_timestamp{0};
@@ -186,6 +191,7 @@ inline Result select(const Input &input, State &state)
 	if (!state.initialized) {
 		state.initialized = true;
 		state.previous_mode = input.requested_mode;
+		state.previous_authority_epoch = input.authority_epoch;
 		state.mode_transition_timestamp = input.now;
 
 		if (input.requested_mode == kModeFull) {
@@ -193,7 +199,8 @@ inline Result select(const Input &input, State &state)
 			entered_mode6 = true;
 		}
 
-	} else if (input.requested_mode != state.previous_mode) {
+	} else if (input.requested_mode != state.previous_mode ||
+		   (input.requested_mode == kModeFull && input.authority_epoch != state.previous_authority_epoch)) {
 		const bool left_mode6 = state.previous_mode == kModeFull;
 
 		if (left_mode6 && state.observed_producer_entry > state.retired_producer_entry) {
@@ -202,6 +209,7 @@ inline Result select(const Input &input, State &state)
 
 		state.observed_producer_entry = 0;
 		state.previous_mode = input.requested_mode;
+		state.previous_authority_epoch = input.authority_epoch;
 		state.mode_transition_timestamp = input.now;
 		state.accepted_session_id = 0;
 		state.accepted_mode_entry_timestamp = 0;
@@ -231,7 +239,8 @@ inline Result select(const Input &input, State &state)
 			state.waiting_for_legacy_source = false;
 		}
 
-		const bool suppress_stale_hydro = state.waiting_for_legacy_source;
+		const bool suppress_stale_hydro = state.waiting_for_legacy_source ||
+			(input.require_current_legacy && !input.legacy_source_current);
 		const float hydro_left = suppress_stale_hydro ? 0.f : input.legacy_hydro_left;
 		const float hydro_right = suppress_stale_hydro ? 0.f : input.legacy_hydro_right;
 		result.final_left = clamp(input.ordinary_left + hydro_left, input.left_min, input.left_max);
@@ -278,6 +287,9 @@ inline Result select(const Input &input, State &state)
 
 	} else if (source.requested_mode != kModeFull || source.source_mode != kModeFull) {
 		envelope_reason = Reason::SourceModeMismatch;
+
+	} else if (source.authority_epoch != input.authority_epoch) {
+		envelope_reason = Reason::FlightModeMismatch;
 
 	} else if (source.selector_epoch == 0 || source.selector_epoch != state.mode_entry_timestamp ||
 		   source.source_timestamp < state.mode_entry_timestamp) {
@@ -359,7 +371,8 @@ inline Result select(const Input &input, State &state)
 	const bool status_fresh = source.status_timestamp > 0 && source.status_timestamp <= input.now &&
 		(input.now - source.status_timestamp <= kSourceMaxAgeUs);
 	const bool fallback_indices_match = source.left_index == input.left_index && source.right_index == input.right_index;
-	result.source_fallback_valid = status_fresh && fallback_indices_match && source.fallback_valid &&
+	result.source_fallback_valid = status_fresh && fallback_indices_match &&
+		source.authority_epoch == input.authority_epoch && source.fallback_valid &&
 		finite_value(source.fallback_left) && finite_value(source.fallback_right) && finite_value(input.ordinary_left) &&
 		finite_value(input.ordinary_right);
 

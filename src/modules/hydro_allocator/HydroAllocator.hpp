@@ -147,7 +147,6 @@ private:
 		param_t fmpc_bnd_en;
 		param_t fmpc_bnd_lim;
 		param_t fmpc_sat_margin;
-		param_t fmpc_full_en;
 		param_t fmpc_full_lim;
 		param_t fmpc_full_trim_en;
 		param_t fmpc_fcand_max;
@@ -172,7 +171,6 @@ private:
 		int32_t fmpc_bnd_en;
 		float fmpc_bnd_lim;
 		float fmpc_sat_margin;
-		int32_t fmpc_full_en;
 		float fmpc_full_lim;
 		int32_t fmpc_full_trim_en;
 		float fmpc_fcand_max;

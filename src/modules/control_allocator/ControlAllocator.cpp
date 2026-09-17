@@ -40,6 +40,10 @@
  */
 
 #include "ControlAllocator.hpp"
+#include "../fixed_mpc_shadow/Mode6FlightMode.hpp"
+
+static_assert(fixed_mpc_shadow::kStabilizedNavState == vehicle_status_s::NAVIGATION_STATE_STAB,
+	      "Mode 6 eligibility must use the current STAB enum");
 
 #include <drivers/drv_hrt.h>
 #include <circuit_breaker/circuit_breaker.h>
@@ -891,7 +895,12 @@ ControlAllocator::publish_actuator_controls()
 			param_get(_param_handles.hy_sv_idx[1], &right_index_param);
 		}
 
-		const uint8_t requested_mode = static_cast<uint8_t>(math::constrain(requested_mode_param, int32_t{0}, int32_t{6}));
+		vehicle_status_s flight_status{};
+		_vehicle_status_sub.copy(&flight_status);
+		const uint8_t configured_mode = static_cast<uint8_t>(math::constrain(requested_mode_param, int32_t{0}, int32_t{6}));
+		const auto flight = fixed_mpc_shadow::select_flight_mode(configured_mode, flight_status.nav_state,
+			flight_status.timestamp, flight_status.nav_state_timestamp, hrt_absolute_time());
+		const uint8_t requested_mode = flight.effective_mode;
 		const int left_index = left_index_param - 1;
 		const int right_index = right_index_param - 1;
 		const bool indices_valid = left_index >= 0 && right_index >= 0 && left_index < servo_count &&
@@ -904,11 +913,17 @@ ControlAllocator::publish_actuator_controls()
 		const bool status_indices_match = _fixed_mpc_allocator_status.left_index == left_index &&
 						 _fixed_mpc_allocator_status.right_index == right_index;
 		const bool legacy_source_current = allocator_status_fresh && status_indices_match &&
-						 _fixed_mpc_allocator_status.requested_mode == requested_mode;
+						 _fixed_mpc_allocator_status.requested_mode == requested_mode &&
+			fixed_mpc_shadow::flight_source_matches(flight, _fixed_mpc_allocator_status.nav_state,
+				_fixed_mpc_allocator_status.nav_state_timestamp);
 
 		roll_fin_output::Input selector_input{};
 		selector_input.now = now;
 		selector_input.requested_mode = requested_mode;
+		selector_input.authority_epoch = flight.mode6_eligible ? flight.nav_epoch : 0;
+		selector_input.require_current_legacy = configured_mode == roll_fin_output::kModeFull ||
+			(_fixed_mpc_allocator_status.source_mode == roll_fin_output::kModeFull &&
+			 _fixed_mpc_allocator_status.command_valid);
 		selector_input.left_index = left_index;
 		selector_input.right_index = right_index;
 		selector_input.servo_count = servo_count;
@@ -939,6 +954,7 @@ ControlAllocator::publish_actuator_controls()
 		}
 
 		selector_input.source.status_timestamp = _fixed_mpc_allocator_status.timestamp;
+		selector_input.source.authority_epoch = _fixed_mpc_allocator_status.nav_state_timestamp;
 		selector_input.source.source_timestamp = _fixed_mpc_allocator_status.source_timestamp;
 		selector_input.source.mode_entry_timestamp = _fixed_mpc_allocator_status.mode_entry_timestamp;
 		selector_input.source.selector_epoch = _fixed_mpc_allocator_status.selector_epoch;
@@ -974,7 +990,12 @@ ControlAllocator::publish_actuator_controls()
 		final_status.source_session_id = _fixed_mpc_allocator_status.mode_session_id;
 		final_status.authority_transition_count = _roll_fin_selector_state.authority_transition_count;
 		final_status.fallback_event_count = _roll_fin_selector_state.fallback_event_count;
-		final_status.requested_mode = requested_mode;
+		final_status.requested_mode = configured_mode;
+		final_status.effective_mode = requested_mode;
+		final_status.nav_state = flight.nav_state;
+		final_status.nav_state_timestamp = flight.nav_epoch;
+		final_status.flight_status_valid = flight.status_valid;
+		final_status.mode6_eligible = flight.mode6_eligible;
 		final_status.selected_owner = static_cast<uint8_t>(selection.owner);
 		final_status.selector_reason = static_cast<uint8_t>(selection.reason);
 		final_status.upstream_fallback_reason = _fixed_mpc_allocator_status.fb_r;
