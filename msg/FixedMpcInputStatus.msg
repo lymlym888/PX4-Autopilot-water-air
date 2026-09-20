@@ -99,7 +99,7 @@ bool reference_valid
 # model_proposal is now the joint-constrained implemented model input.
 # slew_limited denotes a joint-interval rate constraint or recovery limiting the preferred target.
 # constraint_conflict means the correction band and physical range no longer intersect.
-# Mode 6: manual_control_setpoint.roll * HY_ROLL_MAX is the angle reference.
+# Mode 6: roll * HY_ROLL_MAX is clipped to +/-15 deg, as in all STAB reference paths.
 # Prediction uses (actual roll minus reference) * full_error_gain; rate reference stays zero.
 # roll_error_deg remains the unscaled physical error. Only Mode 6 uses these tuning fields.
 # Physical roll remains in fixed_mpc_shadow_status.roll_deg, never replaced by error.

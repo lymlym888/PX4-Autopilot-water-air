@@ -32,6 +32,7 @@
  ****************************************************************************/
 
 #include "HydroAttitudeControl.hpp"
+#include <lib/hydro_control/StabilizedRollReference.hpp>
 
 using namespace time_literals;
 using namespace matrix;
@@ -85,7 +86,8 @@ HydroAttitudeControl::vehicle_manual_poll(const float yaw_body)
 		// Always copy the new manual setpoint, even if it wasn't updated, to fill the actuators with valid values
 		if (_manual_control_setpoint_sub.copy(&_manual_control_setpoint)) {
 
-			_att_sp.roll_body = _manual_control_setpoint.roll * radians(_param_hy_man_r_max.get());
+			_att_sp.roll_body = hydro_control::limit_stabilized_roll_reference(
+				_manual_control_setpoint.roll * radians(_param_hy_man_r_max.get()), true);
 
 			_att_sp.pitch_body = -_manual_control_setpoint.pitch * radians(_param_hy_man_p_max.get())
 						+ radians(_param_hy_psp_off.get());

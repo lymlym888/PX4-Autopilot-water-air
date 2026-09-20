@@ -1,6 +1,7 @@
 #pragma once
 
 #include "FixedLinearMPC.hpp"
+#include <lib/hydro_control/StabilizedRollReference.hpp>
 #include <math.h>
 #include <stdint.h>
 
@@ -63,8 +64,9 @@ inline RollReference manual_roll_reference(uint64_t now, const ManualRollSample 
 	} else if (sample.source < 1 || sample.source > 7) {
 		result.status = RollReferenceStatus::InvalidSource;
 	} else {
-		// Same roll sign, radians and HY_ROLL_MAX scaling as the onboard CADRC.
-		result.roll_rad = sample.roll * (maximum_roll_deg * 0.017453292519943295f);
+		// Mode 6 is STAB-only. Use the same post-mapping cap as onboard CADRC.
+		result.roll_rad = hydro_control::limit_stabilized_roll_reference(
+			sample.roll * (maximum_roll_deg * 0.017453292519943295f), true);
 		result.status = RollReferenceStatus::Ready;
 	}
 	return result;

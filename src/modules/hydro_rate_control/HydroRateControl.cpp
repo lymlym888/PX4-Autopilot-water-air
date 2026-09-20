@@ -32,6 +32,7 @@
  ****************************************************************************/
 
 #include "HydroRateControl.hpp"
+#include <lib/hydro_control/StabilizedRollReference.hpp>
 
 #include <math.h>
 
@@ -244,7 +245,9 @@ void HydroRateControl::Run()
 			float roll_sp = 0.f;
 			float pitch_sp = 0.f;
 			if (_manual_control_setpoint.valid && _manual_control_setpoint.timestamp != 0) {
-				roll_sp  = _manual_control_setpoint.roll  * radians(_param_hy_roll_max.get());
+				roll_sp = hydro_control::limit_stabilized_roll_reference(
+					_manual_control_setpoint.roll * radians(_param_hy_roll_max.get()),
+					_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB);
 				pitch_sp = -_manual_control_setpoint.pitch * radians(_param_hy_pitch_max.get());
 			}
 

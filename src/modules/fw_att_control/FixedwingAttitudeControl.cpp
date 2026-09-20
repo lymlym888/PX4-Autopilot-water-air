@@ -32,6 +32,7 @@
  ****************************************************************************/
 
 #include "FixedwingAttitudeControl.hpp"
+#include <lib/hydro_control/StabilizedRollReference.hpp>
 
 using namespace time_literals;
 using namespace matrix;
@@ -96,7 +97,9 @@ FixedwingAttitudeControl::vehicle_manual_poll(const float yaw_body)
 
 				// STABILIZED mode generate the attitude setpoint from manual user inputs
 
-				_att_sp.roll_body = _manual_control_setpoint.roll * radians(_param_fw_man_r_max.get());
+				_att_sp.roll_body = hydro_control::limit_stabilized_roll_reference(
+					_manual_control_setpoint.roll * radians(_param_fw_man_r_max.get()),
+					_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB);
 
 				_att_sp.pitch_body = -_manual_control_setpoint.pitch * radians(_param_fw_man_p_max.get())
 						     + radians(_param_fw_psp_off.get());
@@ -258,12 +261,13 @@ void FixedwingAttitudeControl::Run()
 
 		const matrix::Eulerf euler_angles(_R);
 
+		// Qualify the reference cap with the current flight mode, not the previous cycle.
+		_vehicle_status_sub.update(&_vehicle_status);
 		vehicle_manual_poll(euler_angles.psi());
 
 		vehicle_attitude_setpoint_poll();
 
 		// vehicle status update must be before the vehicle_control_mode poll, otherwise rate sp are not published during whole transition
-		_vehicle_status_sub.update(&_vehicle_status);
 		const bool is_in_transition_except_tailsitter = _vehicle_status.in_transition_mode
 				&& !_vehicle_status.is_vtol_tailsitter;
 		const bool is_fixed_wing = _vehicle_status.vehicle_type == vehicle_status_s::VEHICLE_TYPE_FIXED_WING;
