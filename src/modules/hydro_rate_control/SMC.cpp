@@ -50,7 +50,7 @@ void SMC::reset()
 	_initialized = false;
 }
 
-float SMC::update(float angle, float angle_setpoint, float rate, float dt)
+float SMC::update(float angle, float angle_setpoint, float rate, float dt, Mode mode)
 {
 	if (!std::isfinite(angle) || !std::isfinite(angle_setpoint) || !std::isfinite(rate) || !std::isfinite(dt)) {
 		reset();
@@ -79,9 +79,17 @@ float SMC::update(float angle, float angle_setpoint, float rate, float dt)
 	const float position_error = _td_position - _z1;
 	const float rate_error = _td_velocity - _z2;
 	const float sliding_surface = _smc_c * position_error + rate_error;
-	const float virtual_control = _smc_c * rate_error + _smc_k * sliding_surface
-				      + _smc_eta * math::constrain(sliding_surface / _smc_boundary, -1.f, 1.f);
-	const float raw_control = (virtual_control - _z3) / _control_gain;
+	float virtual_control = _smc_c * rate_error + _smc_k * sliding_surface;
+
+	if (mode == Mode::Full || mode == Mode::NoCompensation) {
+		virtual_control += _smc_eta * math::constrain(sliding_surface / _smc_boundary, -1.f, 1.f);
+	}
+
+	if (mode == Mode::Full || mode == Mode::NoSwitching) {
+		virtual_control -= _z3;
+	}
+
+	const float raw_control = virtual_control / _control_gain;
 	const float control = math::constrain(raw_control * _output_scale, -_output_limit, _output_limit);
 
 	// Compute this sample's torque before advancing all observer and TD states by Euler integration.

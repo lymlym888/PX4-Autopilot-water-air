@@ -4,6 +4,14 @@
 class SMC
 {
 public:
+	/** Roll control laws selected by HY_ASMC_MODE. All four use the same TD and LESO. */
+	enum class Mode {
+		Full = 1,
+		NoSwitching = 2,
+		NoCompensation = 3,
+		Linear = 4
+	};
+
 	void setParameters(float control_gain, float td_rate, float td_filter, float observer_bandwidth,
 			   float smc_c, float smc_k, float smc_eta, float smc_boundary, float output_scale, float output_limit);
 
@@ -11,7 +19,7 @@ public:
 	void reset();
 
 	/** Inputs in rad, rad, rad/s and s. Returns normalized torque. */
-	float update(float angle, float angle_setpoint, float rate, float dt);
+	float update(float angle, float angle_setpoint, float rate, float dt, Mode mode = Mode::Full);
 
 private:
 	float _control_gain{10.1746f};

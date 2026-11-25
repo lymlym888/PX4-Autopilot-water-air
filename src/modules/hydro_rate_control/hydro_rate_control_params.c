@@ -44,7 +44,7 @@
 /**
  * Enable CADRC attitude control in STAB mode
  *
- * CADRC controls pitch when enabled. HY_ASMC_EN takes priority on roll.
+ * Enables CADRC for pitch and, when HY_ASMC_EN is disabled, for roll.
  *
  * @boolean
  * @group HY CADRC
@@ -135,15 +135,33 @@ PARAM_DEFINE_FLOAT(HY_ROLL_MAX, 30.0f);
 PARAM_DEFINE_FLOAT(HY_PITCH_MAX, 20.0f);
 
 /**
- * Enable ADRC-SMC roll control in STAB mode
+ * Enable roll controller selection in STAB mode
  *
- * Takes precedence over HY_CADRC_EN on roll. HY_CADRC_EN selects the pitch
- * controller independently. The HY_ASMC_* parameters tune roll only.
+ * When enabled, HY_ASMC_MODE selects the roll controller. When disabled,
+ * HY_CADRC_EN selects between CADRC and rate control for roll.
  *
  * @boolean
  * @group HY ADRC-SMC
  */
 PARAM_DEFINE_INT32(HY_ASMC_EN, 1);
+
+/**
+ * STAB roll controller mode
+ *
+ * Applies when HY_ASMC_EN is enabled. Modes 1 through 4 keep the tracking
+ * differentiator and observer active. Mode 5 selects CADRC for roll.
+ * HY_CADRC_EN selects the pitch controller independently.
+ *
+ * @value 1 Full ADRC-SMC
+ * @value 2 SMC without nonlinear switching term
+ * @value 3 SMC without explicit disturbance compensation
+ * @value 4 SMC without switching term or disturbance compensation
+ * @value 5 CADRC
+ * @min 1
+ * @max 5
+ * @group HY ADRC-SMC
+ */
+PARAM_DEFINE_INT32(HY_ASMC_MODE, 1);
 
 /**
  * ADRC-SMC roll model input gain
@@ -237,7 +255,7 @@ PARAM_DEFINE_FLOAT(HY_ASMC_PHI, 0.05f);
 /**
  * ADRC-SMC roll output scale
  *
- * Scales the disturbance-compensated torque command before the HY_ASMC_UMAX limit.
+ * Scales the SMC torque command before the HY_ASMC_UMAX limit.
  *
  * @min 0.000001
  * @max 10.0

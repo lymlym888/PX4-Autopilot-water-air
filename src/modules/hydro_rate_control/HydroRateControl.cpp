@@ -175,24 +175,29 @@ void HydroRateControl::Run()
 		_vehicle_status_sub.update(&_vehicle_status);
 
 		const bool stab = _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB;
-		const bool use_smc_roll = stab && _param_hy_asmc_en.get();
-		const bool use_cadrc = stab && _param_hy_cadrc_en.get();
+		const int32_t roll_mode = (stab && _param_hy_asmc_en.get()) ? _param_hy_asmc_mode.get() : 0;
+		const bool use_smc_roll = roll_mode >= static_cast<int32_t>(SMC::Mode::Full)
+					  && roll_mode <= static_cast<int32_t>(SMC::Mode::Linear);
+		const bool select_cadrc_roll = roll_mode == 5;
+		const bool use_cadrc_pitch = stab && _param_hy_cadrc_en.get();
+		const bool use_cadrc_roll = select_cadrc_roll || (use_cadrc_pitch && !use_smc_roll);
 
 		if (use_smc_roll && !_smc_roll_active) {
 			_smc_roll.reset();
 			_rate_control.resetIntegral(0);
 		}
 
-		if (use_cadrc && !_cadrc_active) {
+		if (use_cadrc_pitch && !_cadrc_pitch_active) {
 			_cadrc_pitch.reset();
 		}
 
-		if (use_cadrc && !use_smc_roll && (!_cadrc_active || _smc_roll_active)) {
+		if (use_cadrc_roll && !_cadrc_roll_active) {
 			_cadrc_roll.reset();
 		}
 
 		_smc_roll_active = use_smc_roll;
-		_cadrc_active = use_cadrc;
+		_cadrc_roll_active = use_cadrc_roll;
+		_cadrc_pitch_active = use_cadrc_pitch;
 
 		manual_control_setpoint_s manual_sp{};
 		const bool got_manual = _manual_control_setpoint_sub.update(&manual_sp);
@@ -204,7 +209,7 @@ void HydroRateControl::Run()
 			_manual_control_setpoint = {};
 		}
 
-		// SMC holds the roll command between RC frames. An invalid frame commands level roll.
+		// All five experiment modes hold the same roll reference between RC frames.
 		if (got_manual) {
 			_last_roll_stick = _manual_control_setpoint.roll;
 		}
@@ -246,31 +251,35 @@ void HydroRateControl::Run()
 			const float p = rates(0); // roll rate rad/s
 			const float q = rates(1); // pitch rate rad/s
 
-			const float roll_stick = use_smc_roll ? _last_roll_stick : _manual_control_setpoint.roll;
+			const float roll_stick = (use_smc_roll || select_cadrc_roll) ? _last_roll_stick : _manual_control_setpoint.roll;
 			const float roll_sp = roll_stick * radians(_param_hy_roll_max.get());
 			const float pitch_sp = -_manual_control_setpoint.pitch * radians(_param_hy_pitch_max.get());
-			float smc_roll_torque = 0.f;
+			const float tau_override = _param_hy_cadrc_tau.get();
+			const float cadrc_dt = (tau_override > 0.f) ? tau_override : dt;
+			const float cadrc_scale = _param_hy_cadrc_u_scale.get();
+			float roll_torque = 0.f;
 
 			if (use_smc_roll) {
 				if (_vehicle_attitude.timestamp != 0 && vehicle_angular_velocity.timestamp_sample != 0) {
-					smc_roll_torque = _smc_roll.update(roll, roll_sp, p, dt);
+					roll_torque = _smc_roll.update(roll, roll_sp, p, dt, static_cast<SMC::Mode>(roll_mode));
 
 				} else {
 					_smc_roll.reset();
 				}
+
+			} else if (use_cadrc_roll) {
+				_cadrc_roll.update(roll, roll_sp, p, cadrc_dt);
+				const float u_roll = constrain(_cadrc_roll.getUc() * cadrc_scale, -1.f, 1.f);
+				roll_torque = constrain(u_roll + _param_trim_roll.get(), -1.f, 1.f);
 			}
 
-			if (use_cadrc) {
-				const float tau_override = _param_hy_cadrc_tau.get();
-				const float dt_used = (tau_override > 0.f) ? tau_override : dt;
-				const float u_scale = _param_hy_cadrc_u_scale.get();
+			if (use_cadrc_pitch) {
 				_hydro_cadrc_control_message.timestamp = hrt_absolute_time();
 				_hydro_cadrc_control_message.roll_sp = roll_sp;
 				_hydro_cadrc_control_message.pitch_sp = pitch_sp;
 
 				if (use_smc_roll) {
-					_hydro_torque_setpoint.xyz[0] = smc_roll_torque;
-					_hydro_cadrc_control_message.u_roll = smc_roll_torque;
+					_hydro_cadrc_control_message.u_roll = roll_torque;
 					// The roll CADRC observers are inactive in this configuration.
 					_hydro_cadrc_control_message.roll_z11 = NAN;
 					_hydro_cadrc_control_message.roll_z12 = NAN;
@@ -278,19 +287,15 @@ void HydroRateControl::Run()
 					_hydro_cadrc_control_message.roll_z22 = NAN;
 
 				} else {
-					_cadrc_roll.update(roll, roll_sp, p, dt_used);
-					const float u_roll = _cadrc_roll.getUc() * u_scale;
-					_hydro_torque_setpoint.xyz[0] = constrain(constrain(u_roll, -1.f, 1.f) + _param_trim_roll.get(),
-										-1.f, 1.f);
-					_hydro_cadrc_control_message.u_roll = u_roll;
+					_hydro_cadrc_control_message.u_roll = _cadrc_roll.getUc() * cadrc_scale;
 					_hydro_cadrc_control_message.roll_z11 = _cadrc_roll._Z1(0,0);
 					_hydro_cadrc_control_message.roll_z12 = _cadrc_roll._Z1(1,0);
 					_hydro_cadrc_control_message.roll_z21 = _cadrc_roll._Z2(0,0);
 					_hydro_cadrc_control_message.roll_z22 = _cadrc_roll._Z2(1,0);
 				}
 
-				_cadrc_pitch.update(pitch, pitch_sp, q, dt_used);
-				const float u_pitch = _cadrc_pitch.getUc() * u_scale;
+				_cadrc_pitch.update(pitch, pitch_sp, q, cadrc_dt);
+				const float u_pitch = _cadrc_pitch.getUc() * cadrc_scale;
 				_hydro_torque_setpoint.xyz[1] = constrain(constrain(u_pitch, -1.f, 1.f) + _param_trim_pitch.get(),
 									-1.f, 1.f);
 				_hydro_cadrc_control_message.u_pitch = u_pitch;
@@ -362,9 +367,7 @@ void HydroRateControl::Run()
 					trim.copyTo(_hydro_torque_setpoint.xyz);
 				}
 
-				if (use_smc_roll) {
-					// SMC already returns the final normalized roll torque, including its own limit.
-					_hydro_torque_setpoint.xyz[0] = smc_roll_torque;
+				if (use_smc_roll || use_cadrc_roll) {
 					_rate_control.resetIntegral(0);
 				}
 
@@ -384,6 +387,10 @@ void HydroRateControl::Run()
 
 					_thrust_sp_norm *= _battery_scale;
 				}
+			}
+
+			if (use_smc_roll || use_cadrc_roll) {
+				_hydro_torque_setpoint.xyz[0] = roll_torque;
 			}
 
 		} else {

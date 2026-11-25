@@ -165,7 +165,8 @@ private:
 	SMC _smc_roll{};
 	float _last_roll_stick{0.f};
 	bool _smc_roll_active{false};
-	bool _cadrc_active{false};
+	bool _cadrc_roll_active{false};
+	bool _cadrc_pitch_active{false};
 
 
 	DEFINE_PARAMETERS(
@@ -248,6 +249,7 @@ private:
 
 		// Roll ADRC-SMC
 		(ParamBool<px4::params::HY_ASMC_EN>) _param_hy_asmc_en,
+		(ParamInt<px4::params::HY_ASMC_MODE>) _param_hy_asmc_mode,
 		(ParamFloat<px4::params::HY_ASMC_B0>) _param_hy_asmc_b0,
 		(ParamFloat<px4::params::HY_ASMC_TD_R>) _param_hy_asmc_td_r,
 		(ParamFloat<px4::params::HY_ASMC_TD_H>) _param_hy_asmc_td_h,
