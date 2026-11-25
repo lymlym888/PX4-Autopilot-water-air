@@ -42,7 +42,9 @@
 
 
 /**
- * Enable CADRC in STAB mode
+ * Enable CADRC attitude control in STAB mode
+ *
+ * CADRC controls pitch when enabled. HY_ASMC_EN takes priority on roll.
  *
  * @boolean
  * @group HY CADRC
@@ -132,6 +134,129 @@ PARAM_DEFINE_FLOAT(HY_ROLL_MAX, 30.0f);
  */
 PARAM_DEFINE_FLOAT(HY_PITCH_MAX, 20.0f);
 
+/**
+ * Enable ADRC-SMC roll control in STAB mode
+ *
+ * Takes precedence over HY_CADRC_EN on roll. HY_CADRC_EN selects the pitch
+ * controller independently. The HY_ASMC_* parameters tune roll only.
+ *
+ * @boolean
+ * @group HY ADRC-SMC
+ */
+PARAM_DEFINE_INT32(HY_ASMC_EN, 1);
+
+/**
+ * ADRC-SMC roll model input gain
+ *
+ * Roll angular acceleration produced by a unit normalized roll torque command.
+ *
+ * @min 0.001
+ * @max 1000.0
+ * @decimal 4
+ * @group HY ADRC-SMC
+ */
+PARAM_DEFINE_FLOAT(HY_ASMC_B0, 10.1746f);
+
+/**
+ * Roll tracking differentiator acceleration limit
+ *
+ * @unit rad/s^2
+ * @min 0.001
+ * @max 1000.0
+ * @decimal 3
+ * @group HY ADRC-SMC
+ */
+PARAM_DEFINE_FLOAT(HY_ASMC_TD_R, 10.0f);
+
+/**
+ * Roll tracking differentiator filter time
+ *
+ * @unit s
+ * @min 0.001
+ * @max 1.0
+ * @decimal 4
+ * @group HY ADRC-SMC
+ */
+PARAM_DEFINE_FLOAT(HY_ASMC_TD_H, 0.1f);
+
+/**
+ * Roll linear extended state observer bandwidth
+ *
+ * @unit rad/s
+ * @min 0.1
+ * @max 100.0
+ * @decimal 2
+ * @group HY ADRC-SMC
+ */
+PARAM_DEFINE_FLOAT(HY_ASMC_WO, 10.0f);
+
+/**
+ * Roll sliding surface angle error gain
+ *
+ * The sliding surface is the rate error plus this gain times the angle error.
+ *
+ * @min 0.0
+ * @max 100.0
+ * @decimal 3
+ * @group HY ADRC-SMC
+ */
+PARAM_DEFINE_FLOAT(HY_ASMC_C, 3.0f);
+
+/**
+ * Roll sliding reaching law proportional gain
+ *
+ * @min 0.0
+ * @max 100.0
+ * @decimal 3
+ * @group HY ADRC-SMC
+ */
+PARAM_DEFINE_FLOAT(HY_ASMC_K, 3.0f);
+
+/**
+ * Roll sliding reaching law switching gain
+ *
+ * @min 0.0
+ * @max 100.0
+ * @decimal 3
+ * @group HY ADRC-SMC
+ */
+PARAM_DEFINE_FLOAT(HY_ASMC_ETA, 2.0f);
+
+/**
+ * Roll sliding surface boundary layer width
+ *
+ * Within this width the switching term varies linearly with the sliding surface.
+ *
+ * @min 0.0001
+ * @max 1.0
+ * @decimal 4
+ * @group HY ADRC-SMC
+ */
+PARAM_DEFINE_FLOAT(HY_ASMC_PHI, 0.05f);
+
+/**
+ * ADRC-SMC roll output scale
+ *
+ * Scales the disturbance-compensated torque command before the HY_ASMC_UMAX limit.
+ *
+ * @min 0.000001
+ * @max 10.0
+ * @decimal 3
+ * @group HY ADRC-SMC
+ */
+PARAM_DEFINE_FLOAT(HY_ASMC_U_SCALE, 1.0f);
+
+/**
+ * ADRC-SMC normalized roll torque limit
+ *
+ * Limits the absolute normalized roll torque sent to the hydro allocator.
+ *
+ * @min 0.001
+ * @max 1.0
+ * @decimal 3
+ * @group HY ADRC-SMC
+ */
+PARAM_DEFINE_FLOAT(HY_ASMC_UMAX, 1.0f);
 
 
 

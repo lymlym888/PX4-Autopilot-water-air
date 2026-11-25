@@ -78,6 +78,7 @@
 
 #include <uORB/topics/hydro_cadrc_control_message.h>
 #include "CADRC.h"
+#include "SMC.h"
 
 using matrix::Eulerf;
 using matrix::Quatf;
@@ -161,7 +162,10 @@ private:
 	//CADRC算法部分
 	ADRCController _cadrc_roll{};
 	ADRCController _cadrc_pitch{};
-	uint8_t _prev_nav_state{vehicle_status_s::NAVIGATION_STATE_MAX};
+	SMC _smc_roll{};
+	float _last_roll_stick{0.f};
+	bool _smc_roll_active{false};
+	bool _cadrc_active{false};
 
 
 	DEFINE_PARAMETERS(
@@ -241,6 +245,19 @@ private:
 		//手动
 		(ParamFloat<px4::params::HY_MAN_RATIO>) _param_hy_man_ratio,
 
+
+		// Roll ADRC-SMC
+		(ParamBool<px4::params::HY_ASMC_EN>) _param_hy_asmc_en,
+		(ParamFloat<px4::params::HY_ASMC_B0>) _param_hy_asmc_b0,
+		(ParamFloat<px4::params::HY_ASMC_TD_R>) _param_hy_asmc_td_r,
+		(ParamFloat<px4::params::HY_ASMC_TD_H>) _param_hy_asmc_td_h,
+		(ParamFloat<px4::params::HY_ASMC_WO>) _param_hy_asmc_wo,
+		(ParamFloat<px4::params::HY_ASMC_C>) _param_hy_asmc_c,
+		(ParamFloat<px4::params::HY_ASMC_K>) _param_hy_asmc_k,
+		(ParamFloat<px4::params::HY_ASMC_ETA>) _param_hy_asmc_eta,
+		(ParamFloat<px4::params::HY_ASMC_PHI>) _param_hy_asmc_phi,
+		(ParamFloat<px4::params::HY_ASMC_U_SCALE>) _param_hy_asmc_u_scale,
+		(ParamFloat<px4::params::HY_ASMC_UMAX>) _param_hy_asmc_umax,
 
 		//CADRC
 		(ParamInt<px4::params::HY_CADRC_EN>) _param_hy_cadrc_en,

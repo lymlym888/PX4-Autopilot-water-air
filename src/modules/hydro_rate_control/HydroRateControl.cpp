@@ -100,6 +100,10 @@ HydroRateControl::parameters_update()
 	_cadrc_roll.setAlpha(alpha);
 	_cadrc_pitch.setAlpha(alpha);
 
+	_smc_roll.setParameters(_param_hy_asmc_b0.get(), _param_hy_asmc_td_r.get(), _param_hy_asmc_td_h.get(),
+				_param_hy_asmc_wo.get(), _param_hy_asmc_c.get(), _param_hy_asmc_k.get(),
+				_param_hy_asmc_eta.get(), _param_hy_asmc_phi.get(), _param_hy_asmc_u_scale.get(),
+				_param_hy_asmc_umax.get());
 
 	return PX4_OK;
 }
@@ -170,35 +174,40 @@ void HydroRateControl::Run()
 
 		_vehicle_status_sub.update(&_vehicle_status);
 
-// --------------------是否切换模式进入stab，是则reset--------------------------------------------------------------
-		// detect transition into STAB (edge)
-		const bool entered_stab =
-		(_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB) &&
-		(_prev_nav_state != vehicle_status_s::NAVIGATION_STATE_STAB);
+		const bool stab = _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB;
+		const bool use_smc_roll = stab && _param_hy_asmc_en.get();
+		const bool use_cadrc = stab && _param_hy_cadrc_en.get();
 
-		if (entered_stab) {
-		// reset CADRC (and optionally other integrators)
-		_cadrc_roll.reset();
-		_cadrc_pitch.reset();
+		if (use_smc_roll && !_smc_roll_active) {
+			_smc_roll.reset();
+			_rate_control.resetIntegral(0);
 		}
-		// update previous nav state
-		_prev_nav_state = _vehicle_status.nav_state;
 
-//---------------------------------小改动，为了无遥控测试用---------------------------------------
-		// //读手动操控信息
-		// _manual_control_setpoint_sub.copy(&_manual_control_setpoint);
-		// 读手动操控信息：如果没检测到(未发布/无效)，就用0
+		if (use_cadrc && !_cadrc_active) {
+			_cadrc_pitch.reset();
+		}
+
+		if (use_cadrc && !use_smc_roll && (!_cadrc_active || _smc_roll_active)) {
+			_cadrc_roll.reset();
+		}
+
+		_smc_roll_active = use_smc_roll;
+		_cadrc_active = use_cadrc;
+
 		manual_control_setpoint_s manual_sp{};
 		const bool got_manual = _manual_control_setpoint_sub.update(&manual_sp);
 
 		if (got_manual && manual_sp.valid && manual_sp.timestamp != 0) {
 			_manual_control_setpoint = manual_sp;
+
 		} else {
-			// 没RC/无效 -> 全部置0，避免用到脏数据
 			_manual_control_setpoint = {};
-			_manual_control_setpoint.valid = false;
 		}
-//----------------------------------结束--------------------------------------------------------
+
+		// SMC holds the roll command between RC frames. An invalid frame commands level roll.
+		if (got_manual) {
+			_last_roll_stick = _manual_control_setpoint.roll;
+		}
 
 		//特技模式下，操控量映射到rate_sp
 		if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO)
@@ -226,12 +235,9 @@ void HydroRateControl::Run()
 		}
 
 		//在非手动模式下，执行控制算法
-		if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO) {
-
-			//CADRC算法增加部分-------------开始
-			// 读取姿态角（实时角度 P）
+		if (stab || _vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_ACRO) {
 			_vehicle_attitude_sub.update(&_vehicle_attitude);
-			Eulerf euler_angles(Quatf(_vehicle_attitude.q));
+			const Eulerf euler_angles(Quatf(_vehicle_attitude.q));
 
 			const float roll  = euler_angles.phi();    // rad
 			const float pitch = euler_angles.theta();  // rad
@@ -240,75 +246,65 @@ void HydroRateControl::Run()
 			const float p = rates(0); // roll rate rad/s
 			const float q = rates(1); // pitch rate rad/s
 
-			// STAB 模式：由遥控器映射目标角度 P_sp；没RC则用0
-			float roll_sp = 0.f;
-			float pitch_sp = 0.f;
-			if (_manual_control_setpoint.valid && _manual_control_setpoint.timestamp != 0) {
-				roll_sp  = _manual_control_setpoint.roll  * radians(_param_hy_roll_max.get());
-				pitch_sp = -_manual_control_setpoint.pitch * radians(_param_hy_pitch_max.get());
+			const float roll_stick = use_smc_roll ? _last_roll_stick : _manual_control_setpoint.roll;
+			const float roll_sp = roll_stick * radians(_param_hy_roll_max.get());
+			const float pitch_sp = -_manual_control_setpoint.pitch * radians(_param_hy_pitch_max.get());
+			float smc_roll_torque = 0.f;
+
+			if (use_smc_roll) {
+				if (_vehicle_attitude.timestamp != 0 && vehicle_angular_velocity.timestamp_sample != 0) {
+					smc_roll_torque = _smc_roll.update(roll, roll_sp, p, dt);
+
+				} else {
+					_smc_roll.reset();
+				}
 			}
 
-			// tau：支持地面站覆盖（0=用真实dt）
-			const float tau_override = _param_hy_cadrc_tau.get();
-			const float dt_used = (tau_override > 0.f) ? tau_override : dt;
-
-			if (_vehicle_status.nav_state == vehicle_status_s::NAVIGATION_STATE_STAB
-			&& _param_hy_cadrc_en.get()) {
-
-				// CADRC：P_sp, P, Wx -> Wx_p -> Uc
-				_cadrc_roll.update(roll, roll_sp, p, dt_used);
-				_cadrc_pitch.update(pitch, pitch_sp, q, dt_used);
-
-				// 记录
+			if (use_cadrc) {
+				const float tau_override = _param_hy_cadrc_tau.get();
+				const float dt_used = (tau_override > 0.f) ? tau_override : dt;
+				const float u_scale = _param_hy_cadrc_u_scale.get();
+				_hydro_cadrc_control_message.timestamp = hrt_absolute_time();
 				_hydro_cadrc_control_message.roll_sp = roll_sp;
 				_hydro_cadrc_control_message.pitch_sp = pitch_sp;
-				_hydro_cadrc_control_message.roll_z11 = _cadrc_roll._Z1(0,0);
-				_hydro_cadrc_control_message.roll_z12 = _cadrc_roll._Z1(1,0);
+
+				if (use_smc_roll) {
+					_hydro_torque_setpoint.xyz[0] = smc_roll_torque;
+					_hydro_cadrc_control_message.u_roll = smc_roll_torque;
+					// The roll CADRC observers are inactive in this configuration.
+					_hydro_cadrc_control_message.roll_z11 = NAN;
+					_hydro_cadrc_control_message.roll_z12 = NAN;
+					_hydro_cadrc_control_message.roll_z21 = NAN;
+					_hydro_cadrc_control_message.roll_z22 = NAN;
+
+				} else {
+					_cadrc_roll.update(roll, roll_sp, p, dt_used);
+					const float u_roll = _cadrc_roll.getUc() * u_scale;
+					_hydro_torque_setpoint.xyz[0] = constrain(constrain(u_roll, -1.f, 1.f) + _param_trim_roll.get(),
+										-1.f, 1.f);
+					_hydro_cadrc_control_message.u_roll = u_roll;
+					_hydro_cadrc_control_message.roll_z11 = _cadrc_roll._Z1(0,0);
+					_hydro_cadrc_control_message.roll_z12 = _cadrc_roll._Z1(1,0);
+					_hydro_cadrc_control_message.roll_z21 = _cadrc_roll._Z2(0,0);
+					_hydro_cadrc_control_message.roll_z22 = _cadrc_roll._Z2(1,0);
+				}
+
+				_cadrc_pitch.update(pitch, pitch_sp, q, dt_used);
+				const float u_pitch = _cadrc_pitch.getUc() * u_scale;
+				_hydro_torque_setpoint.xyz[1] = constrain(constrain(u_pitch, -1.f, 1.f) + _param_trim_pitch.get(),
+									-1.f, 1.f);
+				_hydro_cadrc_control_message.u_pitch = u_pitch;
 				_hydro_cadrc_control_message.pitch_z11 = _cadrc_pitch._Z1(0,0);
 				_hydro_cadrc_control_message.pitch_z12 = _cadrc_pitch._Z1(1,0);
-
-				// 把 Wx_p 发出来做日志（方便在QGC plot看“期望角速度”）
-				// _rates_sp.roll = _cadrc_roll.getRateSp();
-				// _rates_sp.pitch = _cadrc_pitch.getRateSp();
-				// _rates_sp.yaw = 0.f;
-				// _rates_sp.timestamp = hrt_absolute_time();
-				// _rate_sp_pub.publish(_rates_sp);
-
-				// Uc -> 归一化 torque（交给 control allocation）
-				const float u_scale = _param_hy_cadrc_u_scale.get();
-				float u_roll  = math::constrain(_cadrc_roll.getUc()  * u_scale, -1.f, 1.f);
-				float u_pitch = math::constrain(_cadrc_pitch.getUc() * u_scale, -1.f, 1.f);
-
-				// 记录
-				_hydro_cadrc_control_message.u_roll = _cadrc_roll.getUc()  * u_scale;
-				_hydro_cadrc_control_message.u_pitch = _cadrc_pitch.getUc() * u_scale;
-
-				// yaw：先保持最简单的手动映射（后面再决定是否也用CADRC）
-				float u_yaw = math::constrain(_manual_control_setpoint.yaw * _param_hy_man_y_sc.get()
-								+ _param_trim_yaw.get(), -1.f, 1.f);
-
-				// 加 trim（保持与原框架一致）
-				u_roll  = math::constrain(u_roll  + _param_trim_roll.get(),  -1.f, 1.f);
-				u_pitch = math::constrain(u_pitch + _param_trim_pitch.get(), -1.f, 1.f);
-				_hydro_cadrc_control_message.roll_z21 = _cadrc_roll._Z2(0,0);
-				_hydro_cadrc_control_message.roll_z22 = _cadrc_roll._Z2(1,0);
 				_hydro_cadrc_control_message.pitch_z21 = _cadrc_pitch._Z2(0,0);
 				_hydro_cadrc_control_message.pitch_z22 = _cadrc_pitch._Z2(1,0);
 
-				_hydro_torque_setpoint.xyz[0] = u_roll;
-				_hydro_torque_setpoint.xyz[1] = u_pitch;
-				_hydro_torque_setpoint.xyz[2] = u_yaw;
-
-				// 推力：STAB 下也由遥控器给一个基准
+				_hydro_torque_setpoint.xyz[2] = constrain(_manual_control_setpoint.yaw * _param_hy_man_y_sc.get()
+								+ _param_trim_yaw.get(), -1.f, 1.f);
 				_thrust_sp_norm = math::constrain((_manual_control_setpoint.throttle + 1.f) * 0.5f, 0.f, 1.f);
-
-				// 发布!!!!!!
 				_hydro_cadrc_control_message_pub.publish(_hydro_cadrc_control_message);
 
 			} else {
-
-			//CADRC算法增加部分----------结束
-
 				const float airspeed = get_airspeed_and_update_scaling();
 
 				/* reset integrals where needed */
@@ -364,6 +360,12 @@ void HydroRateControl::Run()
 				} else {
 					_rate_control.resetIntegral();
 					trim.copyTo(_hydro_torque_setpoint.xyz);
+				}
+
+				if (use_smc_roll) {
+					// SMC already returns the final normalized roll torque, including its own limit.
+					_hydro_torque_setpoint.xyz[0] = smc_roll_torque;
+					_rate_control.resetIntegral(0);
 				}
 
 				/* throttle passed through if it is finite */
